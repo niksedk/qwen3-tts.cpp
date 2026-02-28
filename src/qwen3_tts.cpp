@@ -8,6 +8,11 @@
 #include <fstream>
 #include <cstdint>
 #include <cstdlib>
+#include <algorithm>
+#include <sstream>
+#include <cctype>
+#include <iomanip>
+#include <limits>
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -275,7 +280,7 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
     
     int64_t t_encode_start = get_time_ms();
     std::vector<float> speaker_embedding;
-    
+
     if (!audio_encoder_.encode(ref_samples, n_ref_samples, speaker_embedding)) {
         result.error_msg = "Failed to extract speaker embedding: " + audio_encoder_.get_error();
         return result;
@@ -287,6 +292,85 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
     }
     
     return synthesize_internal(text, speaker_embedding.data(), params, result);
+}
+
+tts_result Qwen3TTS::synthesize_with_speaker_embedding(const std::string & text,
+                                                        const std::vector<float> & speaker_embedding,
+                                                        const tts_params & params) {
+    tts_result result;
+
+    if (!models_loaded_) {
+        result.error_msg = "Models not loaded";
+        return result;
+    }
+
+    const int expected_dim = transformer_.get_config().hidden_size;
+    if ((int) speaker_embedding.size() != expected_dim) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "Speaker embedding dimension mismatch: got %zu, expected %d",
+                 speaker_embedding.size(), expected_dim);
+        result.error_msg = buf;
+        return result;
+    }
+
+    if (params.print_progress) {
+        fprintf(stderr, "Using provided speaker embedding: %zu floats\n", speaker_embedding.size());
+    }
+
+    result.t_encode_ms = 0;
+    return synthesize_internal(text, speaker_embedding.data(), params, result);
+}
+
+bool Qwen3TTS::extract_speaker_embedding(const std::string & reference_audio,
+                                          std::vector<float> & speaker_embedding,
+                                          int64_t * encode_time_ms) {
+    if (!models_loaded_) {
+        error_msg_ = "Models not loaded";
+        return false;
+    }
+
+    std::vector<float> ref_samples;
+    int ref_sample_rate = 0;
+    if (!load_audio_file(reference_audio, ref_samples, ref_sample_rate)) {
+        error_msg_ = "Failed to load reference audio: " + reference_audio;
+        return false;
+    }
+
+    const int target_rate = 24000;
+    if (ref_sample_rate != target_rate) {
+        fprintf(stderr, "Resampling audio from %d Hz to %d Hz...\n", ref_sample_rate, target_rate);
+        std::vector<float> resampled;
+        resample_linear(ref_samples.data(), (int) ref_samples.size(), ref_sample_rate, resampled, target_rate);
+        ref_samples = std::move(resampled);
+    }
+
+    if (!encoder_loaded_) {
+        if (tts_model_path_.empty()) {
+            error_msg_ = "Internal error: missing TTS model path for lazy encoder load";
+            return false;
+        }
+        int64_t t_encoder_load_start = get_time_ms();
+        if (!audio_encoder_.load_model(tts_model_path_)) {
+            error_msg_ = "Failed to load speaker encoder: " + audio_encoder_.get_error();
+            return false;
+        }
+        encoder_loaded_ = true;
+        fprintf(stderr, "  Speaker encoder lazy-loaded in %lld ms\n",
+                (long long) (get_time_ms() - t_encoder_load_start));
+        log_memory_usage("voice/after-encoder-load");
+    }
+
+    const int64_t t_encode_start = get_time_ms();
+    if (!audio_encoder_.encode(ref_samples.data(), (int32_t) ref_samples.size(), speaker_embedding)) {
+        error_msg_ = "Failed to extract speaker embedding: " + audio_encoder_.get_error();
+        return false;
+    }
+
+    if (encode_time_ms) {
+        *encode_time_ms = get_time_ms() - t_encode_start;
+    }
+    return true;
 }
 
 tts_result Qwen3TTS::synthesize_internal(const std::string & text,
@@ -652,6 +736,108 @@ bool save_audio_file(const std::string & path, const std::vector<float> & sample
     
     fclose(f);
     return true;
+}
+
+static std::string to_lower_ascii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return (char) std::tolower(c);
+    });
+    return s;
+}
+
+static bool has_json_extension(const std::string & path) {
+    const size_t pos = path.find_last_of('.');
+    if (pos == std::string::npos) {
+        return false;
+    }
+    const std::string ext = to_lower_ascii(path.substr(pos));
+    return ext == ".json";
+}
+
+static bool parse_embedding_text(const std::string & text, std::vector<float> & embedding) {
+    std::string cleaned = text;
+    for (char & c : cleaned) {
+        if (c == '[' || c == ']' || c == ',' || c == ';') {
+            c = ' ';
+        }
+    }
+
+    std::istringstream iss(cleaned);
+    float value = 0.0f;
+    embedding.clear();
+    while (iss >> value) {
+        embedding.push_back(value);
+    }
+    return !embedding.empty();
+}
+
+bool load_speaker_embedding_file(const std::string & path,
+                                 std::vector<float> & embedding) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        fprintf(stderr, "ERROR: Cannot open speaker embedding file: %s\n", path.c_str());
+        return false;
+    }
+
+    std::string data((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    if (data.empty()) {
+        fprintf(stderr, "ERROR: Speaker embedding file is empty: %s\n", path.c_str());
+        return false;
+    }
+
+    if (has_json_extension(path) || data.find('[') != std::string::npos) {
+        if (!parse_embedding_text(data, embedding)) {
+            fprintf(stderr, "ERROR: Failed to parse speaker embedding JSON/text: %s\n", path.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    if (data.size() % sizeof(float) != 0) {
+        fprintf(stderr, "ERROR: Speaker embedding binary size is not a multiple of 4 bytes: %s\n", path.c_str());
+        return false;
+    }
+
+    embedding.resize(data.size() / sizeof(float));
+    memcpy(embedding.data(), data.data(), data.size());
+    return true;
+}
+
+bool save_speaker_embedding_file(const std::string & path,
+                                 const std::vector<float> & embedding) {
+    if (embedding.empty()) {
+        fprintf(stderr, "ERROR: Refusing to save empty speaker embedding\n");
+        return false;
+    }
+
+    if (has_json_extension(path)) {
+        std::ofstream out(path, std::ios::out | std::ios::trunc);
+        if (!out) {
+            fprintf(stderr, "ERROR: Cannot create speaker embedding JSON file: %s\n", path.c_str());
+            return false;
+        }
+        out << std::setprecision(std::numeric_limits<float>::max_digits10);
+        out << "[\n";
+        for (size_t i = 0; i < embedding.size(); ++i) {
+            out << "  " << embedding[i];
+            if (i + 1 != embedding.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "]\n";
+        return true;
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!out) {
+        fprintf(stderr, "ERROR: Cannot create speaker embedding binary file: %s\n", path.c_str());
+        return false;
+    }
+    out.write(reinterpret_cast<const char *>(embedding.data()),
+              (std::streamsize) (embedding.size() * sizeof(float)));
+    return out.good();
 }
 
 } // namespace qwen3_tts

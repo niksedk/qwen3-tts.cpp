@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 void print_usage(const char * program) {
     fprintf(stderr, "Usage: %s [options] -m <model_dir> -t <text>\n", program);
@@ -12,6 +13,8 @@ void print_usage(const char * program) {
     fprintf(stderr, "  -t, --text <text>      Text to synthesize (required)\n");
     fprintf(stderr, "  -o, --output <file>    Output WAV file (default: output.wav)\n");
     fprintf(stderr, "  -r, --reference <file> Reference audio for voice cloning\n");
+    fprintf(stderr, "  --speaker-embedding <file> Use precomputed speaker embedding (.json/.bin)\n");
+    fprintf(stderr, "  --dump-speaker-embedding <file> Save extracted embedding from --reference\n");
     fprintf(stderr, "  --temperature <val>    Sampling temperature (default: 0.9, 0=greedy)\n");
     fprintf(stderr, "  --top-k <n>            Top-k sampling (default: 50, 0=disabled)\n");
     fprintf(stderr, "  --top-p <val>          Top-p sampling (default: 1.0)\n");
@@ -24,6 +27,7 @@ void print_usage(const char * program) {
     fprintf(stderr, "Example:\n");
     fprintf(stderr, "  %s -m ./models -t \"Hello, world!\" -o hello.wav\n", program);
     fprintf(stderr, "  %s -m ./models -t \"Hello!\" -r reference.wav -o cloned.wav\n", program);
+    fprintf(stderr, "  %s -m ./models -t \"Hello!\" --speaker-embedding speaker.json -o cloned.wav\n", program);
 }
 
 int main(int argc, char ** argv) {
@@ -31,6 +35,8 @@ int main(int argc, char ** argv) {
     std::string text;
     std::string output_file = "output.wav";
     std::string reference_audio;
+    std::string speaker_embedding_file;
+    std::string dump_speaker_embedding_file;
     
     qwen3_tts::tts_params params;
     
@@ -65,6 +71,18 @@ int main(int argc, char ** argv) {
                 return 1;
             }
             reference_audio = argv[i];
+        } else if (arg == "--speaker-embedding") {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: missing speaker embedding file\n");
+                return 1;
+            }
+            speaker_embedding_file = argv[i];
+        } else if (arg == "--dump-speaker-embedding") {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: missing dump speaker embedding file\n");
+                return 1;
+            }
+            dump_speaker_embedding_file = argv[i];
         } else if (arg == "--temperature") {
             if (++i >= argc) {
                 fprintf(stderr, "Error: missing temperature value\n");
@@ -140,6 +158,15 @@ int main(int argc, char ** argv) {
         print_usage(argv[0]);
         return 1;
     }
+
+    if (!reference_audio.empty() && !speaker_embedding_file.empty()) {
+        fprintf(stderr, "Error: --reference and --speaker-embedding are mutually exclusive\n");
+        return 1;
+    }
+    if (!dump_speaker_embedding_file.empty() && reference_audio.empty()) {
+        fprintf(stderr, "Error: --dump-speaker-embedding requires --reference\n");
+        return 1;
+    }
     
     // Initialize TTS
     qwen3_tts::Qwen3TTS tts;
@@ -158,13 +185,49 @@ int main(int argc, char ** argv) {
     // Generate speech
     qwen3_tts::tts_result result;
     
-    if (reference_audio.empty()) {
+    if (!speaker_embedding_file.empty()) {
+        std::vector<float> speaker_embedding;
+        if (!qwen3_tts::load_speaker_embedding_file(speaker_embedding_file, speaker_embedding)) {
+            fprintf(stderr, "Error: failed to load speaker embedding: %s\n", speaker_embedding_file.c_str());
+            return 1;
+        }
+        if (speaker_embedding.size() != 1024 && speaker_embedding.size() != 2048) {
+            fprintf(stderr,
+                    "Warning: speaker embedding has %zu dimensions; expected 1024 (0.6B) or 2048 (1.7B)\n",
+                    speaker_embedding.size());
+        }
+        fprintf(stderr, "Synthesizing with provided speaker embedding: \"%s\"\n", text.c_str());
+        fprintf(stderr, "Speaker embedding: %s (%zu floats)\n",
+                speaker_embedding_file.c_str(), speaker_embedding.size());
+        result = tts.synthesize_with_speaker_embedding(text, speaker_embedding, params);
+    } else if (reference_audio.empty()) {
         fprintf(stderr, "Synthesizing: \"%s\"\n", text.c_str());
         result = tts.synthesize(text, params);
     } else {
+        std::vector<float> speaker_embedding;
+        int64_t encode_ms = 0;
         fprintf(stderr, "Synthesizing with voice cloning: \"%s\"\n", text.c_str());
         fprintf(stderr, "Reference audio: %s\n", reference_audio.c_str());
-        result = tts.synthesize_with_voice(text, reference_audio, params);
+        if (!tts.extract_speaker_embedding(reference_audio, speaker_embedding, &encode_ms)) {
+            fprintf(stderr, "\nError: failed to extract speaker embedding: %s\n", tts.get_error().c_str());
+            return 1;
+        }
+        if (params.print_timing) {
+            fprintf(stderr, "  Speaker embedding extracted in %lld ms (%zu floats)\n",
+                    (long long) encode_ms, speaker_embedding.size());
+        }
+        if (!dump_speaker_embedding_file.empty()) {
+            if (!qwen3_tts::save_speaker_embedding_file(dump_speaker_embedding_file, speaker_embedding)) {
+                fprintf(stderr, "\nError: failed to save speaker embedding: %s\n",
+                        dump_speaker_embedding_file.c_str());
+                return 1;
+            }
+            fprintf(stderr, "Speaker embedding saved to: %s\n", dump_speaker_embedding_file.c_str());
+        }
+        result = tts.synthesize_with_speaker_embedding(text, speaker_embedding, params);
+        if (result.success) {
+            result.t_encode_ms = encode_ms;
+        }
     }
     
     if (!result.success) {

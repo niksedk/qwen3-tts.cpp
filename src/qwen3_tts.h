@@ -110,6 +110,16 @@ public:
     tts_result synthesize_with_voice(const std::string & text,
                                       const float * ref_samples, int32_t n_ref_samples,
                                       const tts_params & params = tts_params());
+
+    // Generate speech from a precomputed speaker embedding vector
+    tts_result synthesize_with_speaker_embedding(const std::string & text,
+                                                 const std::vector<float> & speaker_embedding,
+                                                 const tts_params & params = tts_params());
+
+    // Extract speaker embedding from reference audio file (WAV)
+    bool extract_speaker_embedding(const std::string & reference_audio,
+                                   std::vector<float> & speaker_embedding,
+                                   int64_t * encode_time_ms = nullptr);
     
     // Set progress callback
     void set_progress_callback(tts_progress_callback_t callback);
@@ -149,5 +159,13 @@ bool load_audio_file(const std::string & path, std::vector<float> & samples,
 // Utility: Save audio file (WAV format)
 bool save_audio_file(const std::string & path, const std::vector<float> & samples,
                      int sample_rate);
+
+// Utility: Load speaker embedding from JSON or float32 binary
+bool load_speaker_embedding_file(const std::string & path,
+                                 std::vector<float> & embedding);
+
+// Utility: Save speaker embedding as JSON (.json) or float32 binary
+bool save_speaker_embedding_file(const std::string & path,
+                                 const std::vector<float> & embedding);
 
 } // namespace qwen3_tts
