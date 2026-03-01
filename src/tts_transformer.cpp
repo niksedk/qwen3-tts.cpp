@@ -35,6 +35,9 @@ void TTSTransformer::unload_model() {
         ggml_backend_sched_free(state_.sched);
         state_.sched = nullptr;
     }
+    state_.sched_reserved = false;
+    state_.sched_reserved_ctx = 0;
+    state_.sched_reserved_prefill_len = 0;
     if (state_.backend) {
         release_preferred_backend(state_.backend);
         state_.backend = nullptr;
@@ -694,6 +697,9 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
     state_.cache.head_dim = cfg.head_dim;
     state_.cache.n_kv_heads = cfg.n_key_value_heads;
     state_.cache.n_layers = cfg.n_layers;
+    state_.sched_reserved = false;
+    state_.sched_reserved_ctx = 0;
+    state_.sched_reserved_prefill_len = 0;
     
     const size_t n_tensors = cfg.n_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
@@ -748,6 +754,9 @@ bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
     state_.code_pred_cache.head_dim = cfg.head_dim;
     state_.code_pred_cache.n_kv_heads = cfg.n_key_value_heads;
     state_.code_pred_cache.n_layers = cfg.code_pred_layers;
+    state_.sched_reserved = false;
+    state_.sched_reserved_ctx = 0;
+    state_.sched_reserved_prefill_len = 0;
     
     const size_t n_tensors = cfg.code_pred_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
@@ -790,6 +799,46 @@ bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
 
 void TTSTransformer::clear_code_pred_kv_cache() {
     state_.code_pred_cache.n_used = 0;
+}
+
+void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t required_ctx) {
+    if (!state_.sched) {
+        return;
+    }
+    if (state_.code_pred_cache.n_ctx < 16) {
+        return;
+    }
+
+    if (state_.sched_reserved &&
+        state_.sched_reserved_ctx >= required_ctx &&
+        state_.sched_reserved_prefill_len >= prefill_len) {
+        return;
+    }
+
+    auto reserve_graph = [&](struct ggml_cgraph * g, const char * name) -> bool {
+        if (!g) {
+            fprintf(stderr, "  Scheduler reserve skipped: null graph for %s\n", name);
+            return false;
+        }
+        const bool ok = ggml_backend_sched_reserve(state_.sched, g);
+        ggml_backend_sched_reset(state_.sched);
+        if (!ok) {
+            fprintf(stderr, "  Scheduler reserve failed for %s; using dynamic graph allocation\n", name);
+        }
+        return ok;
+    };
+
+    bool ok = true;
+    ok &= reserve_graph(build_prefill_forward_graph(prefill_len, 0), "talker prefill");
+    ok &= reserve_graph(build_step_graph(std::max<int32_t>(0, required_ctx - 1)), "talker step");
+    ok &= reserve_graph(build_code_pred_prefill_graph(), "code predictor prefill");
+    ok &= reserve_graph(build_code_pred_step_graph(15, 14), "code predictor step");
+
+    if (ok) {
+        state_.sched_reserved = true;
+        state_.sched_reserved_ctx = required_ctx;
+        state_.sched_reserved_prefill_len = prefill_len;
+    }
 }
 
 bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const int32_t * token_ids,
@@ -2676,6 +2725,13 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
         }
     }
     clear_kv_cache();
+
+    if (state_.code_pred_cache.n_ctx < 16) {
+        if (!init_code_pred_kv_cache(16)) {
+            return false;
+        }
+    }
+    maybe_reserve_scheduler_graphs(prefill_len, required_ctx);
     
     std::vector<float> hidden_out;
     std::vector<float> logits;

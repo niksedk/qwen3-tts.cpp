@@ -179,6 +179,9 @@ struct tts_transformer_state {
     ggml_backend_t backend = nullptr;
     ggml_backend_t backend_cpu = nullptr;
     ggml_backend_sched_t sched = nullptr;
+    bool sched_reserved = false;
+    int32_t sched_reserved_ctx = 0;
+    int32_t sched_reserved_prefill_len = 0;
     
     std::vector<uint8_t> compute_meta;
     std::vector<ggml_fp16_t> code_pred_mask;
@@ -317,6 +320,8 @@ private:
     // Build computation graph for 2-token prefill of code predictor
     // Processes [past_hidden, codec_embd(codebook_0_token)] together
     struct ggml_cgraph * build_code_pred_prefill_graph();
+
+    void maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t required_ctx);
     
     // Parse hyperparameters from GGUF
     bool parse_config(struct gguf_context * ctx);
