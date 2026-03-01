@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <cstring>
 
 #define LOGE(...) fprintf(stderr, "[QwenEngine_JNI] " __VA_ARGS__); fprintf(stderr, "\n")
 
@@ -64,16 +65,27 @@ JNIEXPORT jboolean JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeLoad
     return result != 0 ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynthesize(JNIEnv* env, jobject thiz, jlong ctx_ptr, jstring text, jstring reference_wav, jobject params) {
+JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynthesize(
+    JNIEnv* env, jobject thiz, jlong ctx_ptr, jstring text, jstring reference_wav, jstring speaker_embedding_path, jobject params
+) {
     if (ctx_ptr == 0 || text == nullptr) return nullptr;
 
     const char* c_text = env->GetStringUTFChars(text, nullptr);
     if (c_text == nullptr) return nullptr;
 
     const char* c_ref_wav = nullptr;
+    const char* c_speaker_embedding = nullptr;
     if (reference_wav != nullptr) {
         c_ref_wav = env->GetStringUTFChars(reference_wav, nullptr);
         if (c_ref_wav == nullptr) {
+            env->ReleaseStringUTFChars(text, c_text);
+            return nullptr;
+        }
+    }
+    if (speaker_embedding_path != nullptr) {
+        c_speaker_embedding = env->GetStringUTFChars(speaker_embedding_path, nullptr);
+        if (c_speaker_embedding == nullptr) {
+            if (c_ref_wav) env->ReleaseStringUTFChars(reference_wav, c_ref_wav);
             env->ReleaseStringUTFChars(text, c_text);
             return nullptr;
         }
@@ -82,7 +94,10 @@ JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynth
     qwen3_tts_params_t c_params = {4096, 0.9f, 1.0f, 50, 4, 0, 1, 1.05f, 2050};
     
     qwen3_tts_result_t c_result;
-    if (c_ref_wav && strlen(c_ref_wav) > 0) {
+    if (c_speaker_embedding && strlen(c_speaker_embedding) > 0) {
+        c_result = qwen3_tts_synthesize_with_speaker_embedding(
+            reinterpret_cast<qwen3_tts_context_t*>(ctx_ptr), c_text, c_speaker_embedding, c_params);
+    } else if (c_ref_wav && strlen(c_ref_wav) > 0) {
         c_result = qwen3_tts_synthesize_with_voice(reinterpret_cast<qwen3_tts_context_t*>(ctx_ptr), c_text, c_ref_wav, c_params);
     } else {
         c_result = qwen3_tts_synthesize(reinterpret_cast<qwen3_tts_context_t*>(ctx_ptr), c_text, c_params);
@@ -90,6 +105,7 @@ JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynth
 
     env->ReleaseStringUTFChars(text, c_text);
     if (c_ref_wav) env->ReleaseStringUTFChars(reference_wav, c_ref_wav);
+    if (c_speaker_embedding) env->ReleaseStringUTFChars(speaker_embedding_path, c_speaker_embedding);
 
     if (g_result_class == nullptr || g_result_constructor == nullptr) {
         qwen3_tts_free_result(c_result);
@@ -124,6 +140,27 @@ JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynth
 
     qwen3_tts_free_result(c_result);
     return result_obj;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeExtractSpeakerEmbedding(
+    JNIEnv* env, jobject thiz, jlong ctx_ptr, jstring reference_wav, jstring output_path
+) {
+    if (ctx_ptr == 0 || reference_wav == nullptr || output_path == nullptr) return JNI_FALSE;
+
+    const char* c_ref_wav = env->GetStringUTFChars(reference_wav, nullptr);
+    if (c_ref_wav == nullptr) return JNI_FALSE;
+    const char* c_output_path = env->GetStringUTFChars(output_path, nullptr);
+    if (c_output_path == nullptr) {
+        env->ReleaseStringUTFChars(reference_wav, c_ref_wav);
+        return JNI_FALSE;
+    }
+
+    const int32_t ok = qwen3_tts_extract_speaker_embedding(
+        reinterpret_cast<qwen3_tts_context_t*>(ctx_ptr), c_ref_wav, c_output_path);
+
+    env->ReleaseStringUTFChars(reference_wav, c_ref_wav);
+    env->ReleaseStringUTFChars(output_path, c_output_path);
+    return ok != 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 }

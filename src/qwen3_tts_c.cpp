@@ -2,6 +2,7 @@
 #include "qwen3_tts.h"
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 
 #ifdef _WIN32
 #define strdup _strdup
@@ -89,6 +90,46 @@ qwen3_tts_result_t qwen3_tts_synthesize_with_voice(
     }
     auto result = ctx->tts.synthesize_with_voice(text, reference_audio, convert_params(params));
     return convert_result(result);
+}
+
+qwen3_tts_result_t qwen3_tts_synthesize_with_speaker_embedding(
+    qwen3_tts_context_t* ctx,
+    const char* text,
+    const char* speaker_embedding_file,
+    qwen3_tts_params_t params
+) {
+    if (!ctx || !text || !speaker_embedding_file) {
+        qwen3_tts_result_t res = {0};
+        res.success = 0;
+        res.error_msg = strdup("Invalid context, text, or speaker embedding file");
+        return res;
+    }
+
+    std::vector<float> speaker_embedding;
+    if (!qwen3_tts::load_speaker_embedding_file(speaker_embedding_file, speaker_embedding)) {
+        qwen3_tts_result_t res = {0};
+        res.success = 0;
+        res.error_msg = strdup("Failed to load speaker embedding file");
+        return res;
+    }
+
+    auto result = ctx->tts.synthesize_with_speaker_embedding(text, speaker_embedding, convert_params(params));
+    return convert_result(result);
+}
+
+int32_t qwen3_tts_extract_speaker_embedding(
+    qwen3_tts_context_t* ctx,
+    const char* reference_audio,
+    const char* output_path
+) {
+    if (!ctx || !reference_audio || !output_path) return 0;
+
+    std::vector<float> speaker_embedding;
+    if (!ctx->tts.extract_speaker_embedding(reference_audio, speaker_embedding, nullptr)) {
+        return 0;
+    }
+
+    return qwen3_tts::save_speaker_embedding_file(output_path, speaker_embedding) ? 1 : 0;
 }
 
 void qwen3_tts_free_result(qwen3_tts_result_t result) {
