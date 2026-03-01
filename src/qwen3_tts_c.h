@@ -29,6 +29,7 @@ typedef struct {
     int32_t print_timing;   // Use int32
     float repetition_penalty;
     int32_t language_id;
+    const char* instruction;
 } qwen3_tts_params_t;
 
 typedef struct {

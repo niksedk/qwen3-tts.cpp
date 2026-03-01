@@ -12,6 +12,7 @@ static jmethodID g_result_constructor = nullptr;
 
 static jclass g_params_class = nullptr;
 static jfieldID g_lang_id_field = nullptr;
+static jfieldID g_instruction_field = nullptr;
 
 extern "C" {
 
@@ -46,6 +47,12 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_lang_id_field = env->GetFieldID(g_params_class, "languageId", "I");
     if (g_lang_id_field == nullptr) {
         LOGE("Could not find languageId field in NativeParams");
+        return JNI_ERR;
+    }
+
+    g_instruction_field = env->GetFieldID(g_params_class, "instruction", "Ljava/lang/String;");
+    if (g_instruction_field == nullptr) {
+        LOGE("Could not find instruction field in NativeParams");
         return JNI_ERR;
     }
 
@@ -105,10 +112,20 @@ JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynth
         }
     }
 
-    qwen3_tts_params_t c_params = {4096, 0.9f, 1.0f, 50, 4, 0, 1, 1.05f, 2050};
+    qwen3_tts_params_t c_params = {4096, 0.9f, 1.0f, 50, 4, 0, 1, 1.05f, 2050, nullptr};
     
+    jstring j_instruction = nullptr;
+    const char* c_instruction = nullptr;
+
     if (params != nullptr && g_lang_id_field != nullptr) {
         c_params.language_id = env->GetIntField(params, g_lang_id_field);
+    }
+    if (params != nullptr && g_instruction_field != nullptr) {
+        j_instruction = (jstring)env->GetObjectField(params, g_instruction_field);
+        if (j_instruction != nullptr) {
+            c_instruction = env->GetStringUTFChars(j_instruction, nullptr);
+            c_params.instruction = c_instruction;
+        }
     }
 
     qwen3_tts_result_t c_result;
@@ -124,6 +141,7 @@ JNIEXPORT jobject JNICALL Java_com_qwen_tts_studio_engine_QwenEngine_nativeSynth
     env->ReleaseStringUTFChars(text, c_text);
     if (c_ref_wav) env->ReleaseStringUTFChars(reference_wav, c_ref_wav);
     if (c_speaker_embedding) env->ReleaseStringUTFChars(speaker_embedding_path, c_speaker_embedding);
+    if (c_instruction) env->ReleaseStringUTFChars(j_instruction, c_instruction);
 
     if (g_result_class == nullptr || g_result_constructor == nullptr) {
         qwen3_tts_free_result(c_result);
