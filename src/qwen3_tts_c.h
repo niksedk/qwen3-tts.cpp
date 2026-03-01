@@ -2,7 +2,6 @@
 #define QWEN3_TTS_C_H
 
 #include <stdint.h>
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,8 +25,8 @@ typedef struct {
     float top_p;
     int32_t top_k;
     int32_t n_threads;
-    bool print_progress;
-    bool print_timing;
+    int32_t print_progress; // Use int32 instead of bool for ABI stability
+    int32_t print_timing;   // Use int32
     float repetition_penalty;
     int32_t language_id;
 } qwen3_tts_params_t;
@@ -36,7 +35,7 @@ typedef struct {
     float* audio;
     int32_t audio_len;
     int32_t sample_rate;
-    bool success;
+    int32_t success;        // Use int32
     char* error_msg;
     int64_t t_total_ms;
 } qwen3_tts_result_t;
@@ -46,7 +45,7 @@ typedef void (*qwen3_tts_progress_callback)(int tokens_generated, int max_tokens
 QWEN3_TTS_API qwen3_tts_context_t* qwen3_tts_init();
 QWEN3_TTS_API void qwen3_tts_free(qwen3_tts_context_t* ctx);
 
-QWEN3_TTS_API bool qwen3_tts_load_models(qwen3_tts_context_t* ctx, const char* model_dir);
+QWEN3_TTS_API int32_t qwen3_tts_load_models(qwen3_tts_context_t* ctx, const char* model_dir);
 
 QWEN3_TTS_API qwen3_tts_result_t qwen3_tts_synthesize(
     qwen3_tts_context_t* ctx, 

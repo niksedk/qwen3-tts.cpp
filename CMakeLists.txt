@@ -164,6 +164,9 @@ if(QWEN3_TTS_BUILD_SHARED)
         src/qwen3_tts_jni.cpp
     )
     target_link_libraries(qwen3_tts_jni PRIVATE qwen3_tts JNI::JNI)
+    if(ANDROID)
+        target_link_libraries(qwen3_tts_jni PRIVATE log)
+    endif()
     target_compile_definitions(qwen3_tts PRIVATE QWEN3_TTS_EXPORT)
 endif()
 

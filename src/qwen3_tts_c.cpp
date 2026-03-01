@@ -3,6 +3,10 @@
 #include <cstring>
 #include <cstdlib>
 
+#ifdef _WIN32
+#define strdup _strdup
+#endif
+
 struct qwen3_tts_context {
     qwen3_tts::Qwen3TTS tts;
     qwen3_tts_progress_callback progress_callback = nullptr;
@@ -16,8 +20,8 @@ static qwen3_tts::tts_params convert_params(qwen3_tts_params_t params) {
     p.top_p = params.top_p;
     p.top_k = params.top_k;
     p.n_threads = params.n_threads;
-    p.print_progress = params.print_progress;
-    p.print_timing = params.print_timing;
+    p.print_progress = params.print_progress != 0;
+    p.print_timing = params.print_timing != 0;
     p.repetition_penalty = params.repetition_penalty;
     p.language_id = params.language_id;
     return p;
@@ -33,7 +37,7 @@ static qwen3_tts_result_t convert_result(const qwen3_tts::tts_result& res) {
         r.audio = nullptr;
     }
     r.sample_rate = res.sample_rate;
-    r.success = res.success;
+    r.success = res.success ? 1 : 0;
     if (!res.error_msg.empty()) {
         r.error_msg = strdup(res.error_msg.c_str());
     } else {
@@ -51,9 +55,9 @@ void qwen3_tts_free(qwen3_tts_context_t* ctx) {
     delete ctx;
 }
 
-bool qwen3_tts_load_models(qwen3_tts_context_t* ctx, const char* model_dir) {
-    if (!ctx || !model_dir) return false;
-    return ctx->tts.load_models(model_dir);
+int32_t qwen3_tts_load_models(qwen3_tts_context_t* ctx, const char* model_dir) {
+    if (!ctx || !model_dir) return 0;
+    return ctx->tts.load_models(model_dir) ? 1 : 0;
 }
 
 qwen3_tts_result_t qwen3_tts_synthesize(
@@ -63,7 +67,7 @@ qwen3_tts_result_t qwen3_tts_synthesize(
 ) {
     if (!ctx || !text) {
         qwen3_tts_result_t res = {0};
-        res.success = false;
+        res.success = 0;
         res.error_msg = strdup("Invalid context or text");
         return res;
     }
@@ -79,7 +83,7 @@ qwen3_tts_result_t qwen3_tts_synthesize_with_voice(
 ) {
     if (!ctx || !text || !reference_audio) {
         qwen3_tts_result_t res = {0};
-        res.success = false;
+        res.success = 0;
         res.error_msg = strdup("Invalid context, text, or reference audio");
         return res;
     }
