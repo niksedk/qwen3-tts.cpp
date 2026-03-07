@@ -18,6 +18,11 @@ Runs the full TTS pipeline in pure C++17, including text tokenization, speaker e
 - Deterministic reference tests comparing C++ output against Python
 - Compile-time timing instrumentation with zero overhead in normal builds
 
+## Documentation
+
+- Development plan and implementation status: `docs/development_plan.md`
+- Tensor conversion mapping reference: `docs/tensor_mapping.md`
+
 ## Prerequisites
 
 - C++17 compiler (GCC 9+ or Clang 10+)

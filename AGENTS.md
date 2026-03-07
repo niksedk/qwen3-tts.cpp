@@ -52,7 +52,8 @@ qwen3-tts.cpp/
 - `build-ninja.ps1` is deprecated/removed; use `.\build.ps1 -UseNinja` instead.
 - Run regression tests with `.\scripts\run_all_tests.ps1`.
 - Install test asset Python deps via `.\scripts\prepare_test_assets.ps1 -InstallPythonDeps` (pinned in `scripts/requirements-test-assets.txt`).
-- Before finalizing any change on Windows, run the PowerShell test script and require a non-zero-on-failure result.
+- In this Codex CLI environment on Windows, build/test execution is not reliable; do not run build/tests from Codex.
+- The user must run Windows PowerShell build/tests locally and share results when validation is needed.
 
 ## Coding Conventions
 
