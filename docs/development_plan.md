@@ -22,15 +22,19 @@ Maintain a single, current plan that separates:
 | Decoder snake path | Implemented | Decoder uses `ggml_snake(...)`; ggml has `GGML_OP_SNAKE`. |
 | Static KV update pattern | Implemented | `tts_transformer.cpp` uses `ggml_set_rows(...)` in attention cache update paths. |
 | Python-style dynamic prefill construction | Implemented | `build_prefill_graph(...)` constructs prefill from projected role, codec overlay, first text token, and EOS trailing logic. |
+| 1.7B code predictor hidden-size path | Implemented | Code predictor now uses its own config dimensions (hidden/intermediate/heads/KV/head_dim/rope/eps), independent of talker dimensions. |
+| 1.7B `small_to_mtp` projection support | Implemented | GGUF conversion and C++ loading now include `code_pred.small_to_mtp.{weight,bias}` and apply projection in predictor prefill/step paths. |
+| Missing-projection safety guard | Implemented | Loader now fails fast with a clear message when a model requires `small_to_mtp` but GGUF is missing those tensors. |
+| Python vs C++ trace tooling | Implemented | `scripts/dump_python_trace.py` and `scripts/debug_trace_report.py` allow frame/step-level parity checks. |
 
 ## Current State (Open / Needs Verification)
 
 | Area | Status | Notes |
 |---|---|---|
-| 1.7B speech quality and stopping behavior | Open | Historical report shows mumbling/overgeneration and no EOS within max tokens under deterministic debug runs. |
-| 0.6B deterministic regression under same debug settings | Open | Historical handoff noted similar overgeneration behavior under specific deterministic settings. |
-| M-RoPE position handling consistency | Partial | Some prefill paths use `(p,p,p,0)` style, but some step paths still show `(p,p,p,p)` and should be aligned/verified. |
-| CUDA throughput claim alignment | Needs verification | Older CPU baseline and later CUDA throughput notes differ; benchmark protocol should be unified and rerun. |
+| 1.7B regression coverage in automated tests | Open | Current CI/regression flows are still centered on 0.6B artifacts; add at least one deterministic 1.7B gate. |
+| Cross-speaker/perceptual validation for 1.7B | Open | Validate multiple built-in speakers and prompts after projection fix to guard against voice-specific regressions. |
+| M-RoPE position handling consistency | Partial | Remaining path consistency should still be audited and documented with explicit expected layouts per path. |
+| CUDA throughput benchmark refresh | Needs verification | Re-run and publish comparable CPU/CUDA benchmark data after the 1.7B predictor changes. |
 
 ## Performance Baselines and Targets
 
@@ -55,20 +59,22 @@ Maintain a single, current plan that separates:
 
 Scope:
 
-- Validate EOS and code generation behavior for 0.6B and 1.7B with deterministic settings.
+- Lock in 1.7B fix quality with reproducible checks across speakers/prompts.
+- Add at least one deterministic 1.7B regression check alongside existing 0.6B checks.
 - Confirm M-RoPE position tensors are consistent in all prefill and step paths.
 
 Exit criteria:
 
-- Deterministic smoke prompts emit EOS before max tokens in expected scenarios.
-- No known "mumbling + endless generation" reproduction on baseline prompts.
+- No known 1.7B "mumbling + divergence-at-codepred-step00" reproduction on baseline prompts.
+- Deterministic smoke prompts pass for both 0.6B and 1.7B under documented settings.
+- Regression job includes a 1.7B check (or an explicitly documented lightweight substitute).
 
 ### M1: Reproducible Benchmarking Gate
 
 Scope:
 
 - Standardize one benchmark script and one reporting format (CPU and CUDA variants).
-- Reconcile historical and current metrics in one table with date and hardware fields.
+- Reconcile historical and current metrics in one table with date, commit, model, and hardware fields.
 
 Exit criteria:
 
@@ -89,13 +95,14 @@ Exit criteria:
 
 ## Immediate Next Actions
 
-1. Run deterministic short-prompt checks for 0.6B and 1.7B with `temperature=0` and `top-k=1`, capturing whether/when EOS appears.
-2. Audit all M-RoPE position writes in `tts_transformer.cpp` and normalize to one intended layout per path.
-3. Add a small regression test/assertion for position tensor layout where practical.
+1. Ensure all developers regenerate `qwen3-tts-1.7b-f16.gguf` with the current converter before debugging/runtime comparison.
+2. Add one lightweight 1.7B deterministic regression gate (trace comparison or token-level smoke check).
+3. Audit and document M-RoPE position writes in `tts_transformer.cpp`; add assertions where practical.
 4. Re-run baseline CPU and CUDA benchmarks with identical prompts, token limits, and reporting fields.
-5. Update this document with measured results and promote resolved items from "Open" to "Implemented".
+5. Update this document with measured results and move verified items from "Open" to "Implemented".
 
 ## Ownership and Update Rule
 
 - This file is the source of truth for implementation status and roadmap.
 - When status changes, update this file first, then link to supporting PRs/commits.
+- Latest major correctness milestone: commit `8880e4b` (1.7B code predictor projection fix and trace tooling).
