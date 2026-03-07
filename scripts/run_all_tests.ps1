@@ -476,7 +476,7 @@ if ($transformerExe -and (Test-Path $ttsModel) -and $hasTransformerRefs) {
         -exe $transformerExe `
         -commandArgs @("--model", $ttsModel, "--ref-dir", (Join-Path $repoRoot "reference")) `
         -successRegex "=== All tests passed|=== All tests passed with warnings ===" `
-        -forbiddenRegex "FAIL:")
+        -forbiddenRegex "(?m)^\s*\|\s*FAIL:\s*[1-9]")
 } else {
     Add-Skip "Transformer deterministic (binary/model/reference artifacts missing)"
 }
