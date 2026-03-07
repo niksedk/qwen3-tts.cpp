@@ -1,5 +1,6 @@
 #include "qwen3_tts.h"
 #include "gguf_loader.h"
+#include "ggml.h"
 
 #include <cstdio>
 #include <cstring>
@@ -25,6 +26,58 @@
 #endif
 
 namespace qwen3_tts {
+
+static bool env_flag_enabled(const char * name) {
+    const char * v = std::getenv(name);
+    if (!v || v[0] == '\0') {
+        return false;
+    }
+
+    auto ieq = [](const char * a, const char * b) -> bool {
+        if (!a || !b) {
+            return false;
+        }
+        while (*a && *b) {
+            if (std::tolower((unsigned char) *a) != std::tolower((unsigned char) *b)) {
+                return false;
+            }
+            ++a;
+            ++b;
+        }
+        return *a == '\0' && *b == '\0';
+    };
+
+    if (strcmp(v, "0") == 0) {
+        return false;
+    }
+    if (ieq(v, "false") || ieq(v, "off") || ieq(v, "no")) {
+        return false;
+    }
+    return true;
+}
+
+static void ggml_log_callback_filtered(enum ggml_log_level level, const char * text, void * user_data) {
+    (void) user_data;
+
+    // Keep ggml errors/warnings/info by default, but hide noisy debug traces such as CUDA graph warmup.
+    if (level == GGML_LOG_LEVEL_DEBUG && !env_flag_enabled("QWEN3_TTS_GGML_DEBUG")) {
+        return;
+    }
+
+    if (text) {
+        fputs(text, stderr);
+        fflush(stderr);
+    }
+}
+
+static void configure_ggml_logging_once() {
+    static bool configured = false;
+    if (configured) {
+        return;
+    }
+    configured = true;
+    ggml_log_set(ggml_log_callback_filtered, nullptr);
+}
 
 static int64_t get_time_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -125,6 +178,8 @@ Qwen3TTS::Qwen3TTS() = default;
 Qwen3TTS::~Qwen3TTS() = default;
 
 bool Qwen3TTS::load_models(const std::string & model_dir, const std::string & model_name) {
+    configure_ggml_logging_once();
+
     int64_t t_start = get_time_ms();
     log_memory_usage("load/start");
 
@@ -275,11 +330,11 @@ tts_model_capabilities Qwen3TTS::get_model_capabilities() const {
     caps.supports_named_speakers = caps.speaker_count > 0;
     caps.supports_voice_clone = (cfg.tts_model_type == "base");
 
-    // Current upstream behavior:
-    // - 1.7B CustomVoice supports instruction tokens
-    // - 0.6B CustomVoice should not expose instructions in UI
-    // - Base models focus on cloning without dedicated instruction steering
-    if (cfg.tts_model_type == "custom_voice") {
+    if (cfg.has_supports_instruction) {
+        caps.supports_instruction = cfg.supports_instruction;
+    } else if (cfg.tts_model_type == "custom_voice") {
+        // Legacy fallback for models without explicit metadata:
+        // 1.7B-CustomVoice = hidden_size 2048, 0.6B-CustomVoice = hidden_size 1024.
         caps.supports_instruction = cfg.hidden_size >= 2048;
     } else if (cfg.tts_model_type == "voice_design") {
         caps.supports_instruction = true;

@@ -159,8 +159,23 @@ class Qwen3TTSConverter:
         code_predictor_config = talker_config.get("code_predictor_config", {})
         speaker_encoder_config = self.config.get("speaker_encoder_config", {})
         self.tts_model_type = str(self.config.get("tts_model_type", "base")).lower()
+        self.tts_model_size = str(self.config.get("tts_model_size", "0b6")).lower()
         raw_spk_id_map = talker_config.get("spk_id", {})
         self.spk_id_map = raw_spk_id_map if isinstance(raw_spk_id_map, dict) else {}
+
+        raw_supports_instruction = self.config.get("supports_instruction")
+        if isinstance(raw_supports_instruction, bool):
+            self.supports_instruction = raw_supports_instruction
+        elif isinstance(raw_supports_instruction, int):
+            self.supports_instruction = raw_supports_instruction != 0
+        elif isinstance(raw_supports_instruction, str):
+            self.supports_instruction = raw_supports_instruction.strip().lower() in {"1", "true", "yes", "on"}
+        elif self.tts_model_type == "voice_design":
+            self.supports_instruction = True
+        elif self.tts_model_type == "custom_voice":
+            self.supports_instruction = self.tts_model_size == "1b7"
+        else:
+            self.supports_instruction = False
 
         # Talker parameters
         self.hidden_size = talker_config.get("hidden_size", 1024)
@@ -207,8 +222,7 @@ class Qwen3TTSConverter:
         self.codec_eos_id = talker_config.get("codec_eos_token_id", 2150)
 
         # Model name
-        model_size = str(self.config.get("tts_model_size", "0b6"))
-        if model_size == "1b7":
+        if self.tts_model_size == "1b7":
             self.model_name = "Qwen3-TTS-12Hz-1.7B"
         else:
             self.model_name = "Qwen3-TTS-12Hz-0.6B"
@@ -484,6 +498,7 @@ class Qwen3TTSConverter:
         writer.add_uint32(f"{arch}.text_hidden_size", self.text_hidden_size)
         writer.add_uint32(f"{arch}.num_code_groups", self.num_code_groups)
         writer.add_string(f"{arch}.tts_model_type", self.tts_model_type)
+        writer.add_uint32(f"{arch}.supports_instruction", 1 if self.supports_instruction else 0)
 
         # M-RoPE configuration
         writer.add_array(f"{arch}.rope.mrope_section", self.mrope_section)

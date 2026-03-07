@@ -178,6 +178,7 @@ void TTSTransformer::unload_model() {
         state_.sched = nullptr;
     }
     state_.sched_reserved = false;
+    state_.sched_reserve_failed = false;
     state_.sched_reserved_ctx = 0;
     state_.sched_reserved_prefill_len = 0;
     if (state_.backend) {
@@ -410,6 +411,51 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
         }
         return std::string(default_val ? default_val : "");
     };
+
+    auto get_bool_any = [&](std::initializer_list<const char *> keys, bool default_val, bool * found) -> bool {
+        if (found) {
+            *found = false;
+        }
+        for (const char * key : keys) {
+            int64_t idx = gguf_find_key(ctx, key);
+            if (idx < 0) {
+                continue;
+            }
+
+            const enum gguf_type type = gguf_get_kv_type(ctx, idx);
+            if (found) {
+                *found = true;
+            }
+
+            switch (type) {
+                case GGUF_TYPE_BOOL:
+                    return gguf_get_val_bool(ctx, idx);
+                case GGUF_TYPE_UINT8:
+                    return gguf_get_val_u8(ctx, idx) != 0;
+                case GGUF_TYPE_INT8:
+                    return gguf_get_val_i8(ctx, idx) != 0;
+                case GGUF_TYPE_UINT16:
+                    return gguf_get_val_u16(ctx, idx) != 0;
+                case GGUF_TYPE_INT16:
+                    return gguf_get_val_i16(ctx, idx) != 0;
+                case GGUF_TYPE_UINT32:
+                    return gguf_get_val_u32(ctx, idx) != 0;
+                case GGUF_TYPE_INT32:
+                    return gguf_get_val_i32(ctx, idx) != 0;
+                case GGUF_TYPE_UINT64:
+                    return gguf_get_val_u64(ctx, idx) != 0;
+                case GGUF_TYPE_INT64:
+                    return gguf_get_val_i64(ctx, idx) != 0;
+                default:
+                    fprintf(stderr, "  Warning: ignoring non-numeric metadata key '%s' for boolean parse\n", key);
+                    if (found) {
+                        *found = false;
+                    }
+                    break;
+            }
+        }
+        return default_val;
+    };
     
     auto & cfg = model_.config;
     cfg.text_vocab_size = get_u32_any({
@@ -552,12 +598,20 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
     cfg.tts_model_type = normalize_speaker_name(get_str_any({
         "qwen3-tts.tts_model_type",
     }, "base"));
+    cfg.supports_instruction = get_bool_any({
+        "qwen3-tts.supports_instruction",
+        "qwen3-tts.instruction_supported",
+        "qwen3-tts.instruct_supported",
+    }, false, &cfg.has_supports_instruction);
     cfg.speaker_id_map.clear();
 
     fprintf(stderr, "  Codec IDs: pad=%d, bos=%d, eos=%d, think=%d, nothink=%d, think_bos=%d, think_eos=%d\n",
             cfg.codec_pad_id, cfg.codec_bos_id, cfg.codec_eos_id,
             cfg.codec_think_id, cfg.codec_nothink_id, cfg.codec_think_bos_id, cfg.codec_think_eos_id);
     fprintf(stderr, "  TTS model type: %s\n", cfg.tts_model_type.c_str());
+    if (cfg.has_supports_instruction) {
+        fprintf(stderr, "  Metadata supports_instruction: %s\n", cfg.supports_instruction ? "true" : "false");
+    }
 
     // M-RoPE sections
     int64_t mrope_idx = gguf_find_key(ctx, "qwen3-tts.talker.rope.mrope_section");
@@ -992,6 +1046,7 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
     state_.cache.n_kv_heads = cfg.n_key_value_heads;
     state_.cache.n_layers = cfg.n_layers;
     state_.sched_reserved = false;
+    state_.sched_reserve_failed = false;
     state_.sched_reserved_ctx = 0;
     state_.sched_reserved_prefill_len = 0;
     
@@ -1049,6 +1104,7 @@ bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
     state_.code_pred_cache.n_kv_heads = cfg.code_pred_n_key_value_heads;
     state_.code_pred_cache.n_layers = cfg.code_pred_layers;
     state_.sched_reserved = false;
+    state_.sched_reserve_failed = false;
     state_.sched_reserved_ctx = 0;
     state_.sched_reserved_prefill_len = 0;
     
@@ -1099,6 +1155,9 @@ void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t
     if (!state_.sched) {
         return;
     }
+    if (state_.sched_reserve_failed) {
+        return;
+    }
     if (state_.code_pred_cache.n_ctx < 16) {
         return;
     }
@@ -1109,15 +1168,20 @@ void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t
         return;
     }
 
+    std::string first_failed_graph;
     auto reserve_graph = [&](struct ggml_cgraph * g, const char * name) -> bool {
         if (!g) {
-            fprintf(stderr, "  Scheduler reserve skipped: null graph for %s\n", name);
+            if (first_failed_graph.empty()) {
+                first_failed_graph = name;
+            }
             return false;
         }
         const bool ok = ggml_backend_sched_reserve(state_.sched, g);
         ggml_backend_sched_reset(state_.sched);
         if (!ok) {
-            fprintf(stderr, "  Scheduler reserve failed for %s; using dynamic graph allocation\n", name);
+            if (first_failed_graph.empty()) {
+                first_failed_graph = name;
+            }
         }
         return ok;
     };
@@ -1135,8 +1199,16 @@ void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t
 
     if (ok) {
         state_.sched_reserved = true;
+        state_.sched_reserve_failed = false;
         state_.sched_reserved_ctx = required_ctx;
         state_.sched_reserved_prefill_len = prefill_len;
+    } else {
+        state_.sched_reserved = false;
+        state_.sched_reserve_failed = true;
+        const char * graph_name = first_failed_graph.empty() ? "unknown graph" : first_failed_graph.c_str();
+        fprintf(stderr,
+                "  Scheduler reserve failed at %s; disabling reserve warmup and using dynamic graph allocation\n",
+                graph_name);
     }
 }
 

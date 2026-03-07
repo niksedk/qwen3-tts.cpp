@@ -107,6 +107,8 @@ struct tts_transformer_config {
 
     // Model variant metadata (for 1.7B CustomVoice / VoiceDesign behavior)
     std::string tts_model_type = "base";
+    bool has_supports_instruction = false;
+    bool supports_instruction = false;
     std::map<std::string, int32_t> speaker_id_map;
 };
 
@@ -196,6 +198,7 @@ struct tts_transformer_state {
     ggml_backend_t backend_cpu = nullptr;
     ggml_backend_sched_t sched = nullptr;
     bool sched_reserved = false;
+    bool sched_reserve_failed = false;
     int32_t sched_reserved_ctx = 0;
     int32_t sched_reserved_prefill_len = 0;
     
