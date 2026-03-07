@@ -154,7 +154,23 @@ source .venv/bin/activate
 python scripts/setup_pipeline_models.py
 ```
 
-Useful flags:
+### Model Setup (1.7B-Base and CustomVoice)
+
+For the 1.7B models, use the dedicated setup script:
+
+```bash
+source .venv/bin/activate
+python scripts/setup_1.7b_model.py
+```
+
+This script will:
+1. Download the 1.7B-Base and 1.7B-CustomVoice models.
+2. Download the 12Hz Tokenizer.
+3. Convert them to GGUF with distinct names:
+   - `models/qwen3-tts-1.7b-base-f16.gguf`
+   - `models/qwen3-tts-1.7b-customvoice-f16.gguf`
+
+Useful flags for `setup_pipeline_models.py`:
 
 - `--force` re-downloads and re-generates all artifacts.
 - `--coreml auto|on|off` controls CoreML export behavior.
@@ -193,8 +209,12 @@ For `Qwen3-TTS-12Hz-1.7B-CustomVoice`, always re-run `scripts/convert_tts_to_ggu
 # Voice cloning from reference audio
 ./build/qwen3-tts-cli -m models -t "Hello! How are you?" -r reference.wav -o cloned.wav
 
+# 1.7B Base model (standard generation)
+./build/qwen3-tts-cli -m models --model-name qwen3-tts-1.7b-base-f16.gguf \
+    -t "The 1.7B base model is now running successfully." -o base_1.7b.wav
+
 # 1.7B CustomVoice with style instruction
-./build/qwen3-tts-cli -m models --model-name qwen3-tts-1.7b-f16.gguf \
+./build/qwen3-tts-cli -m models --model-name qwen3-tts-1.7b-customvoice-f16.gguf \
     --speaker vivian -t "Hello! How are you?" --instruct "Whispering, very soft and quiet voice." \
     -o styled.wav
 
