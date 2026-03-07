@@ -1,134 +1,188 @@
+[CmdletBinding()]
 param (
     [switch]$Clean,
     [switch]$UseNinja,
     [switch]$EnableCuda,
+    [switch]$EnableCudaGraphs,
+    [switch]$BuildAll,
+    [switch]$RunSmokeTest,
+    [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$GGMLDir = ""
+    [string]$BuildDir = "",
+    [string]$GGMLDir = "",
+    [string]$Target = "qwen3-tts-cli",
+    [string]$ModelDir = "models",
+    [string]$SmokeText = "This is a test synthesis from build.ps1."
 )
 
-# 1. Load Visual Studio environment (for cl/link and Ninja+MSVC cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 function Import-VSEnv {
-    Write-Host "Loading Visual Studio environment..."
+    if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+        return
+    }
+
     $vswhere = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vswhere)) { return }
+    if (-not (Test-Path $vswhere)) {
+        throw "vswhere.exe not found. Install Visual Studio Build Tools with C++ workload."
+    }
 
     $vsroot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-    if (-not $vsroot) { return }
+    if ([string]::IsNullOrWhiteSpace($vsroot)) {
+        throw "Visual Studio C++ toolchain not found."
+    }
 
     $vcvars = Join-Path $vsroot "VC\Auxiliary\Build\vcvars64.bat"
-    if (-not (Test-Path $vcvars)) { return }
+    if (-not (Test-Path $vcvars)) {
+        throw "vcvars64.bat not found at $vcvars"
+    }
 
-    $envDump = cmd /c "call `"$vcvars`" > nul && set PATH && set INCLUDE && set LIB"
-    $envDump | ForEach-Object {
-        if ($_ -match "^([^=]+)=(.*)$") {
+    Write-Host "Importing Visual Studio environment from: $vcvars"
+    $envDump = cmd /s /c "`"$vcvars`" > nul && set"
+    foreach ($line in $envDump) {
+        if ($line -match "^(.*?)=(.*)$") {
             Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
         }
     }
 }
+
+function Find-FirstExisting([string[]]$paths) {
+    foreach ($path in $paths) {
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
+    }
+    return $null
+}
+
+$ScriptDir = $PSScriptRoot
+$resolvedBuildDir = if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    if ($UseNinja -and $EnableCuda) { Join-Path $ScriptDir "build-cuda-ninja" }
+    elseif ($UseNinja) { Join-Path $ScriptDir "build-ninja" }
+    else { Join-Path $ScriptDir "build" }
+} elseif ([System.IO.Path]::IsPathRooted($BuildDir)) {
+    $BuildDir
+} else {
+    Join-Path $ScriptDir $BuildDir
+}
+
+$resolvedGGMLDir = if ([string]::IsNullOrWhiteSpace($GGMLDir)) {
+    Join-Path $ScriptDir "ggml"
+} elseif ([System.IO.Path]::IsPathRooted($GGMLDir)) {
+    $GGMLDir
+} else {
+    Join-Path $ScriptDir $GGMLDir
+}
+
+if (-not (Test-Path (Join-Path $resolvedGGMLDir "CMakeLists.txt"))) {
+    throw "GGML directory is missing or invalid: $resolvedGGMLDir"
+}
+
 Import-VSEnv
 
-# 2. Paths
-$ScriptDir = $PSScriptRoot
-$BuildDir = Join-Path $ScriptDir "build"
-
-if (-not $GGMLDir) {
-    $GGMLDir = Join-Path $ScriptDir "ggml"
+if ($Clean -and (Test-Path $resolvedBuildDir)) {
+    Write-Host "Cleaning build directory: $resolvedBuildDir"
+    Remove-Item -Path $resolvedBuildDir -Recurse -Force
 }
+New-Item -Path $resolvedBuildDir -ItemType Directory -Force | Out-Null
 
-if ($Clean -and (Test-Path $BuildDir)) {
-    Write-Host "Cleaning build directory..."
-    Remove-Item -Path $BuildDir -Recurse -Force
-}
-
-if (!(Test-Path $BuildDir)) {
-    New-Item -Path $BuildDir -ItemType Directory | Out-Null
-}
-
-if (!(Test-Path (Join-Path $GGMLDir "CMakeLists.txt"))) {
-    Write-Host "GGML directory is missing or invalid: $GGMLDir" -ForegroundColor Red
-    Write-Host "Run: git -C $ScriptDir submodule update --init --recursive" -ForegroundColor Yellow
-    exit 1
-}
-
-# 3. Generator
 $GeneratorArgs = @()
+$isNinja = $false
 if ($UseNinja) {
-    if (Get-Command ninja -ErrorAction SilentlyContinue) {
-        Write-Host "Using Ninja generator..."
-        $GeneratorArgs += @("-G", "Ninja")
-    } else {
-        Write-Host "Ninja not found; falling back to Visual Studio generator."
-        $GeneratorArgs += @("-G", "Visual Studio 17 2022", "-A", "x64")
+    if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+        throw "Ninja was requested with -UseNinja but was not found on PATH."
     }
+    $GeneratorArgs += @("-G", "Ninja")
+    $isNinja = $true
+    Write-Host "Generator: Ninja"
 } else {
-    Write-Host "Using Visual Studio 2022 generator..."
     $GeneratorArgs += @("-G", "Visual Studio 17 2022", "-A", "x64")
+    Write-Host "Generator: Visual Studio 17 2022"
 }
 
-# 4. Configure
-Set-Location $BuildDir
-Write-Host "Configuring CMake..."
-
-$CudaFlag = if ($EnableCuda) { "ON" } else { "OFF" }
+$cudaFlag = if ($EnableCuda) { "ON" } else { "OFF" }
+$cudaGraphsFlag = if ($EnableCudaGraphs -or $EnableCuda) { "ON" } else { "OFF" }
 
 $configureArgs = @(
     "-S", $ScriptDir,
-    "-B", $BuildDir
+    "-B", $resolvedBuildDir
 ) + $GeneratorArgs + @(
     "-DCMAKE_CXX_STANDARD=17",
-    "-DCMAKE_BUILD_TYPE=$Configuration",
     "-DQWEN3_TTS_COREML=OFF",
     "-DQWEN3_TTS_EMBED_GGML=ON",
-    "-DQWEN3_TTS_GGML_DIR=$GGMLDir",
-    "-DGGML_CUDA=$CudaFlag"
+    "-DQWEN3_TTS_GGML_DIR=$resolvedGGMLDir",
+    "-DQWEN3_TTS_BUILD_SHARED=OFF",
+    "-DQWEN3_TTS_CUDA=$cudaFlag",
+    "-DGGML_CUDA=$cudaFlag",
+    "-DGGML_CUDA_GRAPHS=$cudaGraphsFlag"
 )
 
+if ($isNinja) {
+    $configureArgs += "-DCMAKE_BUILD_TYPE=$Configuration"
+}
+
+Write-Host "Configuring CMake in: $resolvedBuildDir"
 & cmake @configureArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "CMake configuration failed!" -ForegroundColor Red
-    exit 1
+    throw "CMake configuration failed."
 }
 
-# 5. Build
-Write-Host "Building qwen3-tts-cli..."
-$buildArgs = @("--build", $BuildDir, "--target", "qwen3-tts-cli", "--config", $Configuration, "--parallel")
+$resolvedTarget = if ($BuildAll) { "ALL_BUILD" } else { $Target }
+Write-Host "Building target: $resolvedTarget ($Configuration)"
+
+$buildArgs = @("--build", $resolvedBuildDir, "--target", $resolvedTarget, "--parallel")
+if (-not $isNinja) {
+    $buildArgs += @("--config", $Configuration)
+}
+
 & cmake @buildArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Build failed!" -ForegroundColor Red
-    exit 1
+    throw "Build failed."
 }
 
-# 6. Locate artifact
-$exeVS = Join-Path $BuildDir "$Configuration\qwen3-tts-cli.exe"
-$exeFlat = Join-Path $BuildDir "qwen3-tts-cli.exe"
-$exeBin = Join-Path $BuildDir "bin\$Configuration\qwen3-tts-cli.exe"
+$exePath = Find-FirstExisting @(
+    (Join-Path $resolvedBuildDir "$Configuration\qwen3-tts-cli.exe"),
+    (Join-Path $resolvedBuildDir "qwen3-tts-cli.exe"),
+    (Join-Path $resolvedBuildDir "bin\$Configuration\qwen3-tts-cli.exe"),
+    (Join-Path $resolvedBuildDir "bin\qwen3-tts-cli.exe")
+)
 
-# 7. Copy runtime DLLs next to executable (Windows loader convenience)
-$dllSourceDir = Join-Path $BuildDir "bin\$Configuration"
-$exeDir = ""
-if (Test-Path $exeVS) {
-    $exeDir = Split-Path -Parent $exeVS
-} elseif (Test-Path $exeBin) {
-    $exeDir = Split-Path -Parent $exeBin
-} elseif (Test-Path $exeFlat) {
-    $exeDir = Split-Path -Parent $exeFlat
-}
-
-if ($exeDir -and (Test-Path $dllSourceDir)) {
+$dllSourceDir = Find-FirstExisting @(
+    (Join-Path $resolvedBuildDir "bin\$Configuration"),
+    (Join-Path $resolvedBuildDir "bin")
+)
+if ($exePath -and $dllSourceDir) {
+    $exeDir = Split-Path -Parent $exePath
     $dlls = Get-ChildItem -Path $dllSourceDir -Filter "*.dll" -ErrorAction SilentlyContinue
     if ($dlls) {
-        Write-Host "Copying runtime DLLs to $exeDir ..."
+        Write-Host "Copying runtime DLLs to $exeDir"
         Copy-Item -Path (Join-Path $dllSourceDir "*.dll") -Destination $exeDir -Force
     }
 }
 
-Write-Host "Build success!" -ForegroundColor Green
-if (Test-Path $exeVS) {
-    Write-Host "Executable: $exeVS"
-} elseif (Test-Path $exeBin) {
-    Write-Host "Executable: $exeBin"
-} elseif (Test-Path $exeFlat) {
-    Write-Host "Executable: $exeFlat"
+Write-Host "Build success." -ForegroundColor Green
+if ($exePath) {
+    Write-Host "CLI executable: $exePath"
 } else {
-    Write-Host "Executable built, but path was not auto-detected. Check build output tree." -ForegroundColor Yellow
+    Write-Host "CLI executable not found (target might not include qwen3-tts-cli)." -ForegroundColor Yellow
+}
+
+if ($RunSmokeTest) {
+    if (-not $exePath) {
+        throw "RunSmokeTest requested, but qwen3-tts-cli.exe was not found."
+    }
+
+    $resolvedModelDir = if ([System.IO.Path]::IsPathRooted($ModelDir)) { $ModelDir } else { Join-Path $ScriptDir $ModelDir }
+    if (-not (Test-Path $resolvedModelDir)) {
+        throw "RunSmokeTest requested, model directory not found: $resolvedModelDir"
+    }
+
+    $outWav = Join-Path $resolvedBuildDir "smoke_test.wav"
+    Write-Host "Running smoke test synthesis..."
+    & $exePath -m $resolvedModelDir -t $SmokeText -o $outWav --temperature 0 --top-k 0 --max-tokens 64
+    if ($LASTEXITCODE -ne 0) {
+        throw "Smoke test failed."
+    }
+    Write-Host "Smoke test output: $outWav" -ForegroundColor Green
 }

@@ -119,11 +119,14 @@ cmake --build build -j4
 
 ```powershell
 # From repo root
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DQWEN3_TTS_EMBED_GGML=ON `
-  -DQWEN3_TTS_GGML_DIR=.\ggml
+\build.ps1 -Configuration Release
 
-cmake --build build --config Release --target qwen3-tts-cli
+# Optional: Ninja build (and optional CUDA)
+\build.ps1 -UseNinja -Configuration Release
+\build.ps1 -UseNinja -EnableCuda -Configuration Release
+
+# Build all targets (CLI + tests)
+\build.ps1 -BuildAll -Configuration Release
 ```
 
 If your `.\ggml` directory is empty (submodule not initialized), point `QWEN3_TTS_GGML_DIR` to another local GGML checkout.
@@ -271,6 +274,15 @@ uv run python scripts/compare_e2e.py
 
 # Generate deterministic reference data from Python
 uv run python scripts/generate_deterministic_reference.py
+```
+
+```powershell
+# Windows: use PowerShell test runner
+.\scripts\run_all_tests.ps1
+
+# Optional: build first, then test
+.\build.ps1 -Configuration Release
+.\scripts\run_all_tests.ps1 -Configuration Release
 ```
 
 ### Test Results (F16 model)
