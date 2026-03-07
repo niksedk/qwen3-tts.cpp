@@ -1,12 +1,11 @@
 #include "ggml.h"
 #include "gguf.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <vector>
 #include <string>
-#include <stdexcept>
-#include <map>
+#include <vector>
 
 // Helper to check if a tensor should be quantized
 bool should_quantize(const std::string & name, enum ggml_type src_type, int n_dims) {
@@ -34,6 +33,51 @@ bool should_quantize(const std::string & name, enum ggml_type src_type, int n_di
     }
 
     return false;
+}
+
+static int32_t file_type_from_qtype(enum ggml_type qtype) {
+    switch (qtype) {
+        case GGML_TYPE_Q4_0: return GGML_FTYPE_MOSTLY_Q4_0;
+        case GGML_TYPE_Q4_1: return GGML_FTYPE_MOSTLY_Q4_1;
+        case GGML_TYPE_Q5_0: return GGML_FTYPE_MOSTLY_Q5_0;
+        case GGML_TYPE_Q5_1: return GGML_FTYPE_MOSTLY_Q5_1;
+        case GGML_TYPE_Q8_0: return GGML_FTYPE_MOSTLY_Q8_0;
+        case GGML_TYPE_Q2_K: return GGML_FTYPE_MOSTLY_Q2_K;
+        case GGML_TYPE_Q3_K: return GGML_FTYPE_MOSTLY_Q3_K;
+        case GGML_TYPE_Q4_K: return GGML_FTYPE_MOSTLY_Q4_K;
+        case GGML_TYPE_Q5_K: return GGML_FTYPE_MOSTLY_Q5_K;
+        case GGML_TYPE_Q6_K: return GGML_FTYPE_MOSTLY_Q6_K;
+        default:             return GGML_FTYPE_UNKNOWN;
+    }
+}
+
+static bool write_all(FILE * fout, const void * data, size_t size, const char * what) {
+    if (size == 0) {
+        return true;
+    }
+    const size_t written = fwrite(data, 1, size, fout);
+    if (written != size) {
+        fprintf(stderr, "error: failed writing %s (%zu/%zu bytes)\n", what, written, size);
+        return false;
+    }
+    return true;
+}
+
+static bool get_file_offset(FILE * fout, uint64_t & offset) {
+#ifdef _WIN32
+    const __int64 pos = _ftelli64(fout);
+    if (pos < 0) {
+        return false;
+    }
+    offset = (uint64_t) pos;
+#else
+    const off_t pos = ftello(fout);
+    if (pos < 0) {
+        return false;
+    }
+    offset = (uint64_t) pos;
+#endif
+    return true;
 }
 
 int main(int argc, char ** argv) {
@@ -80,6 +124,12 @@ int main(int argc, char ** argv) {
     }
 
     struct gguf_context * ctx_out = gguf_init_empty();
+    if (!ctx_out) {
+        fprintf(stderr, "error: failed to create output gguf context\n");
+        gguf_free(ctx_inp);
+        ggml_free(ctx_data);
+        return 1;
+    }
     gguf_set_kv(ctx_out, ctx_inp);
 
     const int n_tensors = (int)gguf_get_n_tensors(ctx_inp);
@@ -100,19 +150,53 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    struct ggml_context * ctx_out_data = nullptr;
+
     // Prepare tensors for output
     struct ggml_init_params params_out = {
         /* .mem_size   = */ 1024 * 1024 * 10, // 10MB overhead
         /* .mem_buffer = */ NULL,
         /* .no_alloc   = */ true,
     };
-    struct ggml_context * ctx_out_data = ggml_init(params_out);
+    ctx_out_data = ggml_init(params_out);
+    if (!ctx_out_data) {
+        fprintf(stderr, "error: failed to allocate output ggml context\n");
+        fclose(fout);
+        gguf_free(ctx_inp);
+        gguf_free(ctx_out);
+        ggml_free(ctx_data);
+        return 1;
+    }
+
+    auto cleanup = [&]() {
+        if (fout) {
+            fclose(fout);
+            fout = nullptr;
+        }
+        if (ctx_inp) {
+            gguf_free(ctx_inp);
+            ctx_inp = nullptr;
+        }
+        if (ctx_out) {
+            gguf_free(ctx_out);
+            ctx_out = nullptr;
+        }
+        if (ctx_data) {
+            ggml_free(ctx_data);
+            ctx_data = nullptr;
+        }
+        if (ctx_out_data) {
+            ggml_free(ctx_out_data);
+            ctx_out_data = nullptr;
+        }
+    };
 
     std::vector<std::vector<uint8_t>> tensor_data;
     tensor_data.reserve(n_tensors);
 
     size_t total_size_inp = 0;
     size_t total_size_out = 0;
+    bool any_quantized = false;
 
     // Buffer for F32 conversion
     std::vector<float> work_f32;
@@ -122,6 +206,7 @@ int main(int argc, char ** argv) {
         struct ggml_tensor * t = ggml_get_tensor(ctx_data, name);
         if (!t) {
             fprintf(stderr, "error: failed to find tensor '%s' in ggml context\n", name);
+            cleanup();
             return 1;
         }
 
@@ -164,6 +249,7 @@ int main(int argc, char ** argv) {
             printf("[%4d/%4d] %-48s - %s\n", i, n_tensors, name, ggml_type_name(type));
             memcpy(data.data(), data_inp, size_inp);
         } else {
+            any_quantized = true;
             // Quantize
             printf("[%4d/%4d] %-48s - %s -> %s\n", i, n_tensors, name, ggml_type_name(type), ggml_type_name(new_type));
 
@@ -177,6 +263,7 @@ int main(int argc, char ** argv) {
                 f32_data = work_f32.data();
             } else {
                 fprintf(stderr, "error: unsupported source type %d\n", type);
+                cleanup();
                 return 1;
             }
 
@@ -187,6 +274,7 @@ int main(int argc, char ** argv) {
             
             if (qs != size_out) {
                 fprintf(stderr, "error: quantization size mismatch (expected %zu, got %zu)\n", size_out, qs);
+                cleanup();
                 return 1;
             }
         }
@@ -194,34 +282,54 @@ int main(int argc, char ** argv) {
         tensor_data.push_back(std::move(data));
     }
 
+    if (any_quantized) {
+        const int32_t ftype = file_type_from_qtype(qtype);
+        if (ftype != GGML_FTYPE_UNKNOWN) {
+            gguf_set_val_u32(ctx_out, "general.file_type", (uint32_t) ftype);
+        }
+        gguf_set_val_u32(ctx_out, "general.quantization_version", GGML_QNT_VERSION);
+    } else {
+        fprintf(stderr, "warning: no tensors matched quantization rules; output remains effectively unquantized\n");
+    }
+
     // Write metadata
     const size_t meta_size = gguf_get_meta_size(ctx_out);
     std::vector<uint8_t> meta_data(meta_size);
     gguf_get_meta_data(ctx_out, meta_data.data());
-    fwrite(meta_data.data(), 1, meta_size, fout);
+    if (!write_all(fout, meta_data.data(), meta_size, "metadata")) {
+        cleanup();
+        return 1;
+    }
 
     // Write tensors
     for (int i = 0; i < n_tensors; ++i) {
         // Pad for alignment
-        size_t offset = ftell(fout);
-        size_t pad = GGML_PAD(offset, gguf_get_alignment(ctx_out)) - offset;
-        if (pad > 0) {
-            std::vector<uint8_t> zeros(pad, 0);
-            fwrite(zeros.data(), 1, pad, fout);
+        uint64_t offset = 0;
+        if (!get_file_offset(fout, offset)) {
+            fprintf(stderr, "error: failed to get output file offset\n");
+            cleanup();
+            return 1;
         }
 
-        fwrite(tensor_data[i].data(), 1, tensor_data[i].size(), fout);
+        const uint64_t aligned = GGML_PAD(offset, gguf_get_alignment(ctx_out));
+        const size_t pad = (size_t) (aligned - offset);
+        if (pad > 0) {
+            std::vector<uint8_t> zeros(pad, 0);
+            if (!write_all(fout, zeros.data(), pad, "tensor alignment padding")) {
+                cleanup();
+                return 1;
+            }
+        }
+
+        if (!write_all(fout, tensor_data[i].data(), tensor_data[i].size(), "tensor data")) {
+            cleanup();
+            return 1;
+        }
     }
-
-    fclose(fout);
-    gguf_free(ctx_inp);
-    gguf_free(ctx_out);
-    ggml_free(ctx_data);
-    ggml_free(ctx_out_data);
-
     printf("\nQuantization complete!\n");
     printf("Original size:  %8.2f MB\n", total_size_inp / 1024.0 / 1024.0);
     printf("Quantized size: %8.2f MB\n", total_size_out / 1024.0 / 1024.0);
 
+    cleanup();
     return 0;
 }
