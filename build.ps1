@@ -148,7 +148,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "CMake configuration failed."
 }
 
-$resolvedTarget = if ($BuildAll) { "ALL_BUILD" } else { $Target }
+$resolvedTarget = if ($BuildAll) {
+    if ($isNinja) { "all" } else { "ALL_BUILD" }
+} else {
+    $Target
+}
 Write-Host "Building target: $resolvedTarget ($Configuration)"
 
 $buildArgs = @("--build", $resolvedBuildDir, "--target", $resolvedTarget, "--parallel")

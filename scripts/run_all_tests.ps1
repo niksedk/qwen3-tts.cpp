@@ -64,6 +64,13 @@ function Resolve-BinaryPath([string]$name, [string]$buildDir, [string]$config) {
     return Find-FirstExisting $candidates
 }
 
+function Get-AllBuildTarget([string]$buildDir) {
+    if (Test-Path (Join-Path $buildDir "build.ninja")) {
+        return "all"
+    }
+    return "ALL_BUILD"
+}
+
 function Write-OutputTail([string]$output, [int]$maxLines = 20) {
     if ([string]::IsNullOrWhiteSpace($output)) {
         return
@@ -307,7 +314,13 @@ if (-not $tokenizerExe -or -not $encoderExe -or -not $transformerExe -or -not $d
     if ($BuildMissingTargets) {
         Write-Host ""
         Write-Host "Some binaries are missing. Attempting to build ALL_BUILD target ..." -ForegroundColor Yellow
-        & cmake --build $resolvedBuildDir --config $Configuration --target ALL_BUILD --parallel
+        $allTarget = Get-AllBuildTarget -buildDir $resolvedBuildDir
+        Write-Host "Using build target: $allTarget"
+        $buildArgs = @("--build", $resolvedBuildDir, "--target", $allTarget, "--parallel")
+        if ($allTarget -eq "ALL_BUILD") {
+            $buildArgs += @("--config", $Configuration)
+        }
+        & cmake @buildArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to build ALL_BUILD for test binaries"
         }
