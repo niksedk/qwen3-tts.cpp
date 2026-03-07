@@ -3,11 +3,15 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
     [string]$ModelDir = "models",
+    [string]$ModelName06 = "qwen3-tts-0.6b-f16.gguf",
+    [string]$ModelName17 = "qwen3-tts-1.7b-f16.gguf",
+    [string]$Model17Speaker = "vivian",
     [string]$ReferenceAudio = "examples/readme_clone_input.wav",
     [string]$OutputDir = "test_output",
     [switch]$BuildFirst,
     [switch]$BuildMissingTargets,
     [switch]$RequireComponentTests,
+    [switch]$Skip17B,
     [switch]$PrepareAssets,
     [switch]$GenerateMissingAssets
 )
@@ -143,6 +147,44 @@ function Invoke-CheckedTest(
     Add-Fail "$name (exit code: $($res.ExitCode))"
     Write-OutputTail -output $res.Output
     return $false
+}
+
+function Save-DebugDumpEnv() {
+    return [PSCustomObject]@{
+        Dir = $env:QWEN3_TTS_DEBUG_DUMP_DIR
+        MaxFrames = $env:QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES
+        MaxCodeSteps = $env:QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS
+    }
+}
+
+function Disable-DebugDumpEnv() {
+    Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES -ErrorAction SilentlyContinue
+    Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS -ErrorAction SilentlyContinue
+}
+
+function Restore-DebugDumpEnv([object]$snapshot) {
+    if ($null -eq $snapshot) {
+        return
+    }
+
+    if ($null -ne $snapshot.Dir) {
+        $env:QWEN3_TTS_DEBUG_DUMP_DIR = $snapshot.Dir
+    } else {
+        Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_DIR -ErrorAction SilentlyContinue
+    }
+
+    if ($null -ne $snapshot.MaxFrames) {
+        $env:QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES = $snapshot.MaxFrames
+    } else {
+        Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES -ErrorAction SilentlyContinue
+    }
+
+    if ($null -ne $snapshot.MaxCodeSteps) {
+        $env:QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS = $snapshot.MaxCodeSteps
+    } else {
+        Remove-Item Env:QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-WavInfo([string]$path, [int]$maxFramesForRms = 48000) {
@@ -294,6 +336,16 @@ function Validate-WavOutput(
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
+$run17B = -not $Skip17B
+
+$debugDumpEnvSnapshot = Save-DebugDumpEnv
+$hadDebugDumpEnv = ($null -ne $debugDumpEnvSnapshot.Dir) -or
+                   ($null -ne $debugDumpEnvSnapshot.MaxFrames) -or
+                   ($null -ne $debugDumpEnvSnapshot.MaxCodeSteps)
+Disable-DebugDumpEnv
+if ($hadDebugDumpEnv) {
+    Write-Host "Debug trace dump environment variables detected and disabled for this test run." -ForegroundColor DarkYellow
+}
 
 $resolvedBuildDir = if ([System.IO.Path]::IsPathRooted($BuildDir)) { $BuildDir } else { Join-Path $repoRoot $BuildDir }
 $resolvedModelDir = if ([System.IO.Path]::IsPathRooted($ModelDir)) { $ModelDir } else { Join-Path $repoRoot $ModelDir }
@@ -367,7 +419,8 @@ if (-not $tokenizerExe -or -not $encoderExe -or -not $transformerExe -or -not $d
     }
 }
 
-$ttsModel = Join-Path $resolvedModelDir "qwen3-tts-0.6b-f16.gguf"
+$ttsModel = Join-Path $resolvedModelDir $ModelName06
+$ttsModel17 = Join-Path $resolvedModelDir $ModelName17
 $tokModel = Join-Path $resolvedModelDir "qwen3-tts-tokenizer-f16.gguf"
 $resolvedRefAudioArg = if ([System.IO.Path]::IsPathRooted($ReferenceAudio)) {
     $ReferenceAudio
@@ -417,9 +470,10 @@ $preflightChecks = @(
     @{ Label = "Encoder test binary";        Path = $encoderExe;     Required = $RequireComponentTests; Hint = "Run: pwsh -File .\build.ps1 -BuildAll -Configuration $Configuration" },
     @{ Label = "Transformer test binary";    Path = $transformerExe; Required = $RequireComponentTests; Hint = "Run: pwsh -File .\build.ps1 -BuildAll -Configuration $Configuration" },
     @{ Label = "Decoder test binary";        Path = $decoderExe;     Required = $RequireComponentTests; Hint = "Run: pwsh -File .\build.ps1 -BuildAll -Configuration $Configuration" },
-    @{ Label = "TTS model";                  Path = $ttsModel;       Required = $true;  Hint = "Place qwen3-tts-0.6b-f16.gguf under '$resolvedModelDir'." },
+    @{ Label = "TTS model (0.6B)";           Path = $ttsModel;       Required = $true;  Hint = "Place $ModelName06 under '$resolvedModelDir'." },
+    @{ Label = "TTS model (1.7B)";           Path = $ttsModel17;     Required = $run17B; Hint = "Place $ModelName17 under '$resolvedModelDir'." },
     @{ Label = "Tokenizer model";            Path = $tokModel;       Required = $true;  Hint = "Place qwen3-tts-tokenizer-f16.gguf under '$resolvedModelDir'." },
-    @{ Label = "Reference audio";            Path = $refAudio;       Required = $RequireComponentTests; Hint = "Use -ReferenceAudio or place examples/readme_clone_input.wav." },
+    @{ Label = "Reference audio";            Path = $refAudio;       Required = $true; Hint = "Use -ReferenceAudio or place examples/readme_clone_input.wav." },
     @{ Label = "Encoder reference embedding";Path = $encoderRef;     Required = $RequireComponentTests; Hint = "Run: pwsh -File .\scripts\prepare_test_assets.ps1 -GenerateMissing" },
     @{ Label = "Decoder codes";              Path = $decoderCodes;   Required = $RequireComponentTests; Hint = "Run: pwsh -File .\scripts\prepare_test_assets.ps1 -GenerateMissing" },
     @{ Label = "Decoder reference audio";    Path = $decoderRef;     Required = $RequireComponentTests; Hint = "Run: pwsh -File .\scripts\prepare_test_assets.ps1 -GenerateMissing" }
@@ -445,7 +499,7 @@ if ($RequireComponentTests) {
     }
 }
 
-$strictPreflightFailed = $RequireComponentTests -and ($strictMissingCount -gt 0)
+$strictPreflightFailed = ($strictMissingCount -gt 0)
 if ($strictPreflightFailed) {
     Add-Fail "Strict preflight failed: $strictMissingCount required prerequisite(s) missing."
     Write-Host "Fix commands:" -ForegroundColor DarkYellow
@@ -495,7 +549,7 @@ if ($decoderExe -and (Test-Path $tokModel) -and $decoderCodes) {
     Add-Skip "Decoder (binary/model/codes missing)"
 }
 
-Write-Section "Section 2: CLI Output Regression Checks"
+Write-Section "Section 2: CLI Output Regression Checks (0.6B)"
 
 if (-not $cliExe) {
     Add-Skip "CLI output tests (qwen3-tts-cli binary missing)"
@@ -539,11 +593,110 @@ if (-not $cliExe) {
     }
 }
 
+Write-Section "Section 3: CLI Output Regression Checks (1.7B)"
+
+if (-not $run17B) {
+    Add-Skip "1.7B CLI output tests disabled (-Skip17B)"
+} elseif (-not $cliExe) {
+    Add-Skip "1.7B CLI output tests (qwen3-tts-cli binary missing)"
+} elseif (-not (Test-Path $ttsModel17)) {
+    Add-Fail "1.7B CLI output tests (required model missing: $ttsModel17)"
+} else {
+    $basic17Out = Join-Path $resolvedOutputDir "regression_1p7b_basic.wav"
+    $clone17Out = Join-Path $resolvedOutputDir "regression_1p7b_clone.wav"
+    $styleWhisperOut = Join-Path $resolvedOutputDir "regression_1p7b_style_whisper.wav"
+    $styleAngryOut = Join-Path $resolvedOutputDir "regression_1p7b_style_angry_shout.wav"
+
+    Write-Host ""
+    Write-Host "--- CLI 1.7B basic synthesis ---"
+    $basic17Res = Invoke-CommandCapture -exe $cliExe -commandArgs @(
+        "-m", $resolvedModelDir,
+        "--model-name", $ModelName17,
+        "--speaker", $Model17Speaker,
+        "-t", "Hello world from qwen3 one point seven b.",
+        "--temperature", "0",
+        "--top-k", "1",
+        "--max-tokens", "128",
+        "-o", $basic17Out
+    )
+    if ($basic17Res.ExitCode -eq 0) {
+        Validate-WavOutput -testName "CLI 1.7B basic synthesis" -wavPath $basic17Out | Out-Null
+    } else {
+        Add-Fail "CLI 1.7B basic synthesis (exit code: $($basic17Res.ExitCode))"
+        Write-OutputTail -output $basic17Res.Output
+    }
+
+    if ($refAudio) {
+        Write-Host ""
+        Write-Host "--- CLI 1.7B voice cloning ---"
+    $clone17Res = Invoke-CommandCapture -exe $cliExe -commandArgs @(
+        "-m", $resolvedModelDir,
+        "--model-name", $ModelName17,
+        "-t", "Hello world from cloned voice on one point seven b.",
+        "-r", $refAudio,
+        "--temperature", "0",
+        "--top-k", "1",
+            "--max-tokens", "128",
+            "-o", $clone17Out
+        )
+        if ($clone17Res.ExitCode -eq 0) {
+            Validate-WavOutput -testName "CLI 1.7B voice cloning" -wavPath $clone17Out | Out-Null
+        } else {
+            Add-Fail "CLI 1.7B voice cloning (exit code: $($clone17Res.ExitCode))"
+            Write-OutputTail -output $clone17Res.Output
+        }
+    } else {
+        Add-Fail "CLI 1.7B voice cloning (reference audio missing)"
+    }
+
+    Write-Host ""
+    Write-Host "--- CLI 1.7B style: whisper ---"
+    $styleWhisperRes = Invoke-CommandCapture -exe $cliExe -commandArgs @(
+        "-m", $resolvedModelDir,
+        "--model-name", $ModelName17,
+        "--speaker", $Model17Speaker,
+        "-t", "Please keep this between us.",
+        "--instruct", "Whispering, very soft and quiet voice.",
+        "--temperature", "0",
+        "--top-k", "1",
+        "--max-tokens", "128",
+        "-o", $styleWhisperOut
+    )
+    if ($styleWhisperRes.ExitCode -eq 0) {
+        Validate-WavOutput -testName "CLI 1.7B style whisper" -wavPath $styleWhisperOut | Out-Null
+    } else {
+        Add-Fail "CLI 1.7B style whisper (exit code: $($styleWhisperRes.ExitCode))"
+        Write-OutputTail -output $styleWhisperRes.Output
+    }
+
+    Write-Host ""
+    Write-Host "--- CLI 1.7B style: angry shout ---"
+    $styleAngryRes = Invoke-CommandCapture -exe $cliExe -commandArgs @(
+        "-m", $resolvedModelDir,
+        "--model-name", $ModelName17,
+        "--speaker", $Model17Speaker,
+        "-t", "This is unacceptable. Stop right now.",
+        "--instruct", "Angry voice, shouting, high intensity.",
+        "--temperature", "0",
+        "--top-k", "1",
+        "--max-tokens", "128",
+        "-o", $styleAngryOut
+    )
+    if ($styleAngryRes.ExitCode -eq 0) {
+        Validate-WavOutput -testName "CLI 1.7B style angry shout" -wavPath $styleAngryOut | Out-Null
+    } else {
+        Add-Fail "CLI 1.7B style angry shout (exit code: $($styleAngryRes.ExitCode))"
+        Write-OutputTail -output $styleAngryRes.Output
+    }
+}
+
 Write-Section "Summary"
 Write-Host "PASS: $PASS_COUNT"
 Write-Host "FAIL: $FAIL_COUNT"
 Write-Host "SKIP: $SKIP_COUNT"
 Write-Host "Outputs: $resolvedOutputDir"
+
+Restore-DebugDumpEnv -snapshot $debugDumpEnvSnapshot
 
 if ($FAIL_COUNT -gt 0) {
     exit 1
