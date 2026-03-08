@@ -11,11 +11,15 @@ Runs the full TTS pipeline in pure C++17, including text tokenization, speaker e
 ## Features
 
 - Full text-to-speech pipeline in C++17 with GGML backend
-- Voice cloning from reference audio (ECAPA-TDNN x-vector extraction)
+- Voice cloning from reference audio or reusable speaker embeddings
+- Named speakers and natural-language voice/style instructions for CustomVoice models
 - Greedy and sampled decoding (temperature, top-k, repetition penalty)
-- GGUF model format (F16 and Q8_0 quantization)
+- Multilingual language selection from the CLI and native APIs
+- Native C API plus optional JNI and Kotlin Multiplatform bindings
+- GGUF model format with native quantizer support for Q4/Q5/Q8 and K-quants
 - Runtime backend selection with GPU/Metal preference and CPU fallback
 - Deterministic reference tests comparing C++ output against Python
+- Benchmark and debug tooling for Python-vs-C++, CUDA graphs, and trace dumps
 - Compile-time timing instrumentation with zero overhead in normal builds
 
 ## Documentation
@@ -27,7 +31,7 @@ Runs the full TTS pipeline in pure C++17, including text tokenization, speaker e
 
 - C++17 compiler (GCC 9+ or Clang 10+)
 - CMake 3.14+
-- [GGML](https://github.com/ggml-org/ggml) built from source
+- Vendored `./ggml` submodule or another local [GGML](https://github.com/ggml-org/ggml) checkout
 - Python 3.10+ with [uv](https://github.com/astral-sh/uv) (model conversion only)
 
 ## Quickstart (macOS, copy/paste)
@@ -39,35 +43,31 @@ git clone https://github.com/predict-woo/qwen3-tts.cpp.git
 cd qwen3-tts.cpp
 git submodule update --init --recursive
 
-# 1) Build GGML with Metal
-cmake -S ggml -B ggml/build -DGGML_METAL=ON
-cmake --build ggml/build -j4
-
-# 2) Build qwen3-tts.cpp
-cmake -S . -B build
+# 1) Build qwen3-tts.cpp (vendored ggml is built as part of this step)
+cmake -S . -B build -DGGML_METAL=ON
 cmake --build build -j4
 
-# 3) Create a uv Python environment for setup/conversion tools
+# 2) Create a uv Python environment for setup/conversion tools
 uv venv .venv
 source .venv/bin/activate
 
-# 4) Install Python dependencies
+# 3) Install Python dependencies
 uv pip install --upgrade pip
 uv pip install huggingface_hub gguf torch safetensors numpy tqdm coremltools
 
 # Optional if model access requires auth:
 # huggingface-cli login
 
-# 5) Download and generate all runtime model artifacts
+# 4) Download and generate all runtime model artifacts
 python scripts/setup_pipeline_models.py
 
-# 6) Basic synthesis example
+# 5) Basic synthesis example
 ./build/qwen3-tts-cli \
   -m models \
   -t "Hello from qwen3-tts.cpp running on macOS with CoreML by default." \
   -o examples/readme_example_basic.wav
 
-# 7) Voice-clone example using sample audio in this repo
+# 6) Voice-clone example using sample audio in this repo
 ./build/qwen3-tts-cli \
   -m models \
   -r examples/readme_clone_input.wav \
@@ -75,13 +75,13 @@ python scripts/setup_pipeline_models.py
   -o examples/readme_example_clone.wav
 ```
 
-Expected model artifacts after step 5:
+Expected model artifacts after step 4:
 
 - `models/qwen3-tts-0.6b-f16.gguf`
 - `models/qwen3-tts-tokenizer-f16.gguf`
 - `models/coreml/code_predictor.mlpackage` (on macOS)
 
-Expected audio outputs after steps 6-7:
+Expected audio outputs after steps 5-6:
 
 - `examples/readme_example_basic.wav`
 - `examples/readme_example_clone.wav`
@@ -109,29 +109,27 @@ git clone https://github.com/predict-woo/qwen3-tts.cpp.git
 cd qwen3-tts.cpp
 git submodule update --init --recursive
 
-# Build GGML (vendored in ./ggml)
-cmake -S ggml -B ggml/build -DGGML_METAL=ON
-cmake --build ggml/build -j4
-
-# Build qwen3-tts.cpp
+# Build qwen3-tts.cpp (builds vendored ggml by default)
 cmake -S . -B build
 cmake --build build -j4
 ```
 
-> **Note:** The top-level CMake currently expects GGML in `./ggml` with libraries under `./ggml/build/src`.
+> **Note:** Top-level CMake builds the vendored `./ggml` submodule by default (`QWEN3_TTS_EMBED_GGML=ON`).
+> Use `-DQWEN3_TTS_GGML_DIR=<path-to-ggml>` to point at another local GGML checkout.
+> If you want to link prebuilt GGML libraries instead, set `-DQWEN3_TTS_EMBED_GGML=OFF -DQWEN3_TTS_GGML_BUILD_DIR=<path-to-ggml-build>`.
 
 ### Build on Windows (Visual Studio 2022)
 
 ```powershell
 # From repo root
-\build.ps1 -Configuration Release
+.\build.ps1 -Configuration Release
 
 # Optional: Ninja build (and optional CUDA)
-\build.ps1 -UseNinja -Configuration Release
-\build.ps1 -UseNinja -EnableCuda -Configuration Release
+.\build.ps1 -UseNinja -Configuration Release
+.\build.ps1 -UseNinja -EnableCuda -Configuration Release
 
 # Build all targets (CLI + tests)
-\build.ps1 -BuildAll -Configuration Release
+.\build.ps1 -BuildAll -Configuration Release
 ```
 
 `build.ps1` always uses the same `.\build` directory by default (including Ninja mode).  
@@ -212,6 +210,12 @@ For `Qwen3-TTS-12Hz-1.7B-CustomVoice`, always re-run `scripts/convert_tts_to_ggu
 # Voice cloning from reference audio
 ./build/qwen3-tts-cli -m models -t "Hello! How are you?" -r reference.wav -o cloned.wav
 
+# Save a speaker embedding and reuse it later
+./build/qwen3-tts-cli -m models -r reference.wav \
+    --dump-speaker-embedding speaker.json -t "First pass" -o cloned_once.wav
+./build/qwen3-tts-cli -m models --speaker-embedding speaker.json \
+    -t "Second pass without re-encoding" -o cloned_reuse.wav
+
 # 1.7B Base model (standard generation)
 ./build/qwen3-tts-cli -m models --model-name qwen3-tts-1.7b-base-f16.gguf \
     -t "The 1.7B base model is now running successfully." -o base_1.7b.wav
@@ -231,22 +235,51 @@ For `Qwen3-TTS-12Hz-1.7B-CustomVoice`, always re-run `scripts/convert_tts_to_ggu
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-m, --model <dir>` | Model directory containing GGUF files | (required) |
+| `--model-name <file>` | Select a specific TTS GGUF inside `--model` | auto-detect |
 | `-t, --text <text>` | Text to synthesize | (required) |
 | `-o, --output <file>` | Output WAV file path | `output.wav` |
 | `-r, --reference <file>` | Reference audio for voice cloning | (none) |
+| `--speaker <name>` | Named speaker from loaded CustomVoice metadata | (none) |
+| `--speaker-embedding <file>` | Reuse a saved speaker embedding (`.json` or `.bin`) | (none) |
+| `--dump-speaker-embedding <file>` | Save the embedding extracted from `--reference` | (none) |
 | `--temperature <val>` | Sampling temperature (0 = greedy) | 0.9 |
 | `--top-k <n>` | Top-k sampling (0 = disabled) | 50 |
 | `--top-p <val>` | Top-p sampling | 1.0 |
 | `--max-tokens <n>` | Maximum audio frames to generate | 4096 |
 | `--repetition-penalty <val>` | Repetition penalty on codebook-0 token generation | 1.05 |
+| `-l, --language <lang>` | Language code: `en ru zh ja ko de fr es it pt` | `en` |
 | `--instruction <text>`, `--instruct <text>` | Voice/style steering text (CustomVoice 1.7B) | (none) |
 | `-j, --threads <n>` | Number of compute threads | 4 |
 
 `--top-p` is currently parsed by the CLI but not yet wired into transformer sampling.
 `--instruct` now follows Python reference behavior (`instruct_ids` path): the instruction is injected as a separate user prompt, not mixed into assistant text.
+`--reference`, `--speaker`, and `--speaker-embedding` are mutually exclusive input modes.
 
 On macOS, CoreML code predictor is enabled by default when `models/coreml/code_predictor.mlpackage` exists.
 Set `QWEN3_TTS_USE_COREML=0` to disable it. Low-memory mode is opt-in via `QWEN3_TTS_LOW_MEM=1`.
+
+## Native APIs
+
+The project now exposes more than the CLI:
+
+- C++ API via `src/qwen3_tts.h` (`Qwen3TTS`)
+- C API via `src/qwen3_tts_c.h` for model loading, synthesis, speaker embedding extraction, available speakers, and model capability queries
+- Optional JNI shared library via `-DQWEN3_TTS_BUILD_SHARED=ON`
+- Kotlin Multiplatform wrappers in `shared/src/*/kotlin/com/qwen/tts/studio/engine/QwenEngine.kt`
+
+The native capability APIs are intended for frontends that need to inspect the loaded model and adapt their UI:
+
+- Whether the model supports voice cloning
+- Whether it exposes named speakers
+- Whether it supports instruction/style prompts
+- Speaker embedding dimension and available speaker count
+
+To build the JNI shared library for JVM/Android integration:
+
+```bash
+cmake -S . -B build -DQWEN3_TTS_BUILD_SHARED=ON
+cmake --build build -j4
+```
 
 ### Backend Selection
 
@@ -281,6 +314,22 @@ python .\scripts\dump_python_trace.py --model .\models\Qwen3-TTS-12Hz-1.7B-Custo
 python .\scripts\debug_trace_report.py --trace-a .\trace_cpp_1p7 --trace-b .\trace_py_1p7
 ```
 
+## Benchmarking
+
+The benchmark snapshot at the top of this README is reproducible with the repo scripts:
+
+- `scripts/benchmark_python_vs_cpp.ps1` compares the current CLI against the Python reference pipeline and can also compare against an original forked CLI build
+- `scripts/benchmark_cuda_graphs.ps1` measures 1.7B F16/Q8_0/Q4_K runs with CUDA graphs enabled and disabled
+
+Typical Windows usage:
+
+```powershell
+.\scripts\benchmark_python_vs_cpp.ps1 -Deterministic
+.\scripts\benchmark_cuda_graphs.ps1
+```
+
+Results are written under `benchmark_output/`.
+
 ## Architecture
 
 ```
@@ -302,6 +351,8 @@ speech codes ──► [Vocoder] ──► audio waveform (24kHz)
 | `tts_transformer.{h,cpp}` | TTS Transformer | 28-layer Qwen2 talker + 5-layer code predictor |
 | `audio_tokenizer_decoder.{h,cpp}` | Vocoder | WavTokenizer decoder (codes to waveform) |
 | `qwen3_tts.{h,cpp}` | Pipeline | Full pipeline orchestration |
+| `qwen3_tts_c.{h,cpp}` | C API | Stable native API for C, Kotlin/Native, and other FFI consumers |
+| `qwen3_tts_jni.cpp` | JNI | JVM/Android bridge used by Kotlin |
 | `main.cpp` | CLI | Command-line interface |
 | `gguf_loader.{h,cpp}` | GGUF | Model loading utilities |
 
