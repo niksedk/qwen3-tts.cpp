@@ -13,6 +13,28 @@ The immediate goal is not to redesign the runtime architecture. The goal is to:
 - Make ownership boundaries easier to understand
 - Preserve current behavior, tests, and performance characteristics while refactoring
 
+## Execution Status
+
+Current branch status on `refactor/architecture-split`:
+
+- Completed: internal transformer helper boundary introduced in `src/transformer/transformer_internal.h`
+- Completed: debug trace implementation extracted into `src/transformer/transformer_debug.cpp`
+- Completed: transformer model loading/config/tensor setup extracted into `src/transformer/transformer_loader.cpp`
+- Confirmed after each completed step: local rebuild and test pass on the current Windows/CUDA workflow
+
+Current transformer split status:
+
+- Still in `src/tts_transformer.cpp`: KV-cache lifecycle, scheduler reservation, graph builders, runtime execution, sampling, and autoregressive generation
+- Now moved out of `src/tts_transformer.cpp`: debug trace helpers, model load/unload path, GGUF config parsing, tensor creation, tensor data loading, CoreML loader hookup
+
+Recommended next step from this point:
+
+- Extract cache and scheduler lifecycle code into `src/transformer/transformer_cache.cpp`
+
+Guardrail for ongoing work:
+
+- Keep each extraction functionality-preserving and stop for rebuild/test after every mechanical step
+
 ## Current High-Level Architecture
 
 The runtime is already organized around sensible pipeline stages:
