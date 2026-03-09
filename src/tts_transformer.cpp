@@ -11,149 +11,9 @@
 #include <random>
 #include <unordered_set>
 #include <cstdlib>
-#include <cctype>
-#include <filesystem>
-#include <sstream>
 #include <sys/stat.h>
 
 namespace qwen3_tts {
-
-namespace transformer_internal {
-
-std::string normalize_speaker_name(const std::string & name) {
-    std::string out = name;
-    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
-        return (char) std::tolower(c);
-    });
-    return out;
-}
-
-int32_t parse_env_i32(const char * name, int32_t default_value, int32_t min_value, int32_t max_value) {
-    const char * raw = std::getenv(name);
-    if (!raw || raw[0] == '\0') {
-        return default_value;
-    }
-    char * end_ptr = nullptr;
-    long parsed = strtol(raw, &end_ptr, 10);
-    if (!end_ptr || *end_ptr != '\0') {
-        return default_value;
-    }
-    if (parsed < min_value) parsed = min_value;
-    if (parsed > max_value) parsed = max_value;
-    return (int32_t) parsed;
-}
-
-debug_trace_config init_debug_trace_config() {
-    debug_trace_config cfg;
-    const char * dir_env = std::getenv("QWEN3_TTS_DEBUG_DUMP_DIR");
-    if (!dir_env || dir_env[0] == '\0') {
-        return cfg;
-    }
-
-    cfg.dir = dir_env;
-    cfg.max_frames = parse_env_i32("QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES", 1, 1, 512);
-    cfg.max_code_steps = parse_env_i32("QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS", 15, 1, 15);
-
-    std::error_code ec;
-    std::filesystem::create_directories(cfg.dir, ec);
-    if (ec) {
-        fprintf(stderr, "  Debug trace disabled: failed to create '%s' (%s)\n",
-                cfg.dir.c_str(), ec.message().c_str());
-        return {};
-    }
-
-    cfg.enabled = true;
-
-    std::filesystem::path manifest_path = std::filesystem::path(cfg.dir) / "manifest.tsv";
-    std::ofstream manifest(manifest_path.string(), std::ios::out | std::ios::trunc);
-    if (manifest.is_open()) {
-        manifest << "name\tdtype\tcount\tshape\n";
-        manifest.close();
-    }
-
-    std::filesystem::path info_path = std::filesystem::path(cfg.dir) / "trace_info.txt";
-    std::ofstream info(info_path.string(), std::ios::out | std::ios::trunc);
-    if (info.is_open()) {
-        info << "QWEN3_TTS_DEBUG_DUMP_MAX_FRAMES=" << cfg.max_frames << "\n";
-        info << "QWEN3_TTS_DEBUG_DUMP_MAX_CODE_STEPS=" << cfg.max_code_steps << "\n";
-        info.close();
-    }
-
-    fprintf(stderr, "  Debug trace enabled: %s\n", cfg.dir.c_str());
-    return cfg;
-}
-
-const debug_trace_config & get_debug_trace_config() {
-    static debug_trace_config cfg = init_debug_trace_config();
-    return cfg;
-}
-
-bool debug_trace_should_dump_frame(const debug_trace_config & cfg, int32_t frame) {
-    return cfg.enabled && frame >= 0 && frame < cfg.max_frames;
-}
-
-} // namespace transformer_internal
-
-static std::string format_shape(const std::vector<int64_t> & shape) {
-    std::ostringstream oss;
-    for (size_t i = 0; i < shape.size(); ++i) {
-        if (i > 0) {
-            oss << "x";
-        }
-        oss << shape[i];
-    }
-    return oss.str();
-}
-
-static void debug_trace_append_manifest(const transformer_internal::debug_trace_config & cfg,
-                                        const std::string & name,
-                                        const char * dtype,
-                                        size_t count,
-                                        const std::vector<int64_t> & shape) {
-    if (!cfg.enabled) {
-        return;
-    }
-    std::filesystem::path manifest_path = std::filesystem::path(cfg.dir) / "manifest.tsv";
-    std::ofstream manifest(manifest_path.string(), std::ios::out | std::ios::app);
-    if (!manifest.is_open()) {
-        return;
-    }
-    manifest << name << "\t" << dtype << "\t" << count << "\t" << format_shape(shape) << "\n";
-}
-
-template <typename T>
-static void debug_trace_write_bin(const transformer_internal::debug_trace_config & cfg,
-                                  const std::string & name,
-                                  const T * data,
-                                  size_t count,
-                                  const char * dtype,
-                                  const std::vector<int64_t> & shape) {
-    if (!cfg.enabled || !data || count == 0) {
-        return;
-    }
-
-    std::filesystem::path out_path = std::filesystem::path(cfg.dir) / name;
-    FILE * f = fopen(out_path.string().c_str(), "wb");
-    if (!f) {
-        return;
-    }
-    fwrite(data, sizeof(T), count, f);
-    fclose(f);
-
-    debug_trace_append_manifest(cfg, name, dtype, count, shape);
-}
-
-static void debug_trace_write_text_line(const transformer_internal::debug_trace_config & cfg, const std::string & line) {
-    if (!cfg.enabled) {
-        return;
-    }
-    std::filesystem::path info_path = std::filesystem::path(cfg.dir) / "trace_info.txt";
-    std::ofstream info(info_path.string(), std::ios::out | std::ios::app);
-    if (!info.is_open()) {
-        return;
-    }
-    info << line << "\n";
-}
 
 TTSTransformer::TTSTransformer() = default;
 
@@ -2897,8 +2757,8 @@ bool TTSTransformer::predict_codes_autoregressive_coreml(const float * hidden,
     if (trace_frame_enabled) {
         char name[128];
         snprintf(name, sizeof(name), "frame%03d_codepred_input_hidden.f32.bin", trace_frame);
-        debug_trace_write_bin<float>(trace_cfg, name, hidden, (size_t) cfg.hidden_size,
-                                     "f32", {(int64_t) cfg.hidden_size});
+        transformer_internal::debug_trace_write_bin(trace_cfg, name, hidden, (size_t) cfg.hidden_size,
+                                                    "f32", {(int64_t) cfg.hidden_size});
     }
 
 #ifdef QWEN3_TTS_TIMING
@@ -2937,9 +2797,9 @@ bool TTSTransformer::predict_codes_autoregressive_coreml(const float * hidden,
             char logits_name[128];
             snprintf(logits_name, sizeof(logits_name),
                      "frame%03d_codepred_logits_step%02d.f32.bin", trace_frame, step);
-            debug_trace_write_bin<float>(trace_cfg, logits_name, logits_data.data(),
-                                         (size_t) cfg.code_pred_vocab_size,
-                                         "f32", {(int64_t) cfg.code_pred_vocab_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, logits_name, logits_data.data(),
+                                                        (size_t) cfg.code_pred_vocab_size,
+                                                        "f32", {(int64_t) cfg.code_pred_vocab_size});
         }
 
         output[step] = sample_or_argmax(logits_data.data(), cfg.code_pred_vocab_size);
@@ -2959,8 +2819,8 @@ bool TTSTransformer::predict_codes_autoregressive_coreml(const float * hidden,
         char tokens_name[128];
         snprintf(tokens_name, sizeof(tokens_name),
                  "frame%03d_codepred_tokens_cb1_15.i32.bin", trace_frame);
-        debug_trace_write_bin<int32_t>(trace_cfg, tokens_name, output.data(), output.size(),
-                                       "i32", {(int64_t) output.size()});
+        transformer_internal::debug_trace_write_bin(trace_cfg, tokens_name, output.data(), output.size(),
+                                                    "i32", {(int64_t) output.size()});
     }
 
     return true;
@@ -3056,16 +2916,16 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
         char hidden_name[128];
         snprintf(hidden_name, sizeof(hidden_name),
                  "frame%03d_codepred_input_hidden.f32.bin", trace_frame);
-        debug_trace_write_bin<float>(trace_cfg, hidden_name, hidden,
-                                     (size_t) cfg.hidden_size, "f32",
-                                     {(int64_t) cfg.hidden_size});
+        transformer_internal::debug_trace_write_bin(trace_cfg, hidden_name, hidden,
+                                                    (size_t) cfg.hidden_size, "f32",
+                                                    {(int64_t) cfg.hidden_size});
 
         char embd_name[128];
         snprintf(embd_name, sizeof(embd_name),
                  "frame%03d_codepred_input_cb0_embd.f32.bin", trace_frame);
-        debug_trace_write_bin<float>(trace_cfg, embd_name, cb0_embd.data(),
-                                     (size_t) cfg.hidden_size, "f32",
-                                     {(int64_t) cfg.hidden_size});
+        transformer_internal::debug_trace_write_bin(trace_cfg, embd_name, cb0_embd.data(),
+                                                    (size_t) cfg.hidden_size, "f32",
+                                                    {(int64_t) cfg.hidden_size});
     }
 #ifdef QWEN3_TTS_TIMING
     t1 = clk::now();
@@ -3158,9 +3018,9 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
             char logits_name[128];
             snprintf(logits_name, sizeof(logits_name),
                      "frame%03d_codepred_logits_step00.f32.bin", trace_frame);
-            debug_trace_write_bin<float>(trace_cfg, logits_name, logits_data.data(),
-                                         (size_t) cfg.code_pred_vocab_size, "f32",
-                                         {(int64_t) cfg.code_pred_vocab_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, logits_name, logits_data.data(),
+                                                        (size_t) cfg.code_pred_vocab_size, "f32",
+                                                        {(int64_t) cfg.code_pred_vocab_size});
         }
         
         output[0] = sample_or_argmax(logits_data.data(), cfg.code_pred_vocab_size);
@@ -3279,9 +3139,9 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
             char logits_name[128];
             snprintf(logits_name, sizeof(logits_name),
                      "frame%03d_codepred_logits_step%02d.f32.bin", trace_frame, step);
-            debug_trace_write_bin<float>(trace_cfg, logits_name, logits_data.data(),
-                                         (size_t) cfg.code_pred_vocab_size, "f32",
-                                         {(int64_t) cfg.code_pred_vocab_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, logits_name, logits_data.data(),
+                                                        (size_t) cfg.code_pred_vocab_size, "f32",
+                                                        {(int64_t) cfg.code_pred_vocab_size});
         }
         
         output[step] = sample_or_argmax(logits_data.data(), cfg.code_pred_vocab_size);
@@ -3300,8 +3160,8 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
         char tokens_name[128];
         snprintf(tokens_name, sizeof(tokens_name),
                  "frame%03d_codepred_tokens_cb1_15.i32.bin", trace_frame);
-        debug_trace_write_bin<int32_t>(trace_cfg, tokens_name, output.data(), output.size(),
-                                       "i32", {(int64_t) output.size()});
+        transformer_internal::debug_trace_write_bin(trace_cfg, tokens_name, output.data(), output.size(),
+                                                    "i32", {(int64_t) output.size()});
     }
     
     return true;
@@ -3344,12 +3204,12 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     const auto & cfg = model_.config;
     const auto & trace_cfg = transformer_internal::get_debug_trace_config();
     if (trace_cfg.enabled) {
-        debug_trace_write_text_line(trace_cfg, "hidden_size=" + std::to_string(cfg.hidden_size));
-        debug_trace_write_text_line(trace_cfg, "codec_vocab_size=" + std::to_string(cfg.codec_vocab_size));
-        debug_trace_write_text_line(trace_cfg, "code_pred_vocab_size=" + std::to_string(cfg.code_pred_vocab_size));
-        debug_trace_write_text_line(trace_cfg, "n_codebooks=" + std::to_string(cfg.n_codebooks));
-        debug_trace_write_text_line(trace_cfg, "n_tokens=" + std::to_string(n_tokens));
-        debug_trace_write_text_line(trace_cfg, "max_len=" + std::to_string(max_len));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "hidden_size=" + std::to_string(cfg.hidden_size));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "codec_vocab_size=" + std::to_string(cfg.codec_vocab_size));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "code_pred_vocab_size=" + std::to_string(cfg.code_pred_vocab_size));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "n_codebooks=" + std::to_string(cfg.n_codebooks));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "n_tokens=" + std::to_string(n_tokens));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "max_len=" + std::to_string(max_len));
     }
 
     std::vector<float> prefill_embd;
@@ -3373,19 +3233,19 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     const int32_t trailing_len = (int32_t)(trailing_text_hidden.size() / cfg.hidden_size);
 
     if (trace_cfg.enabled) {
-        debug_trace_write_text_line(trace_cfg, "prefill_len=" + std::to_string(prefill_len));
-        debug_trace_write_text_line(trace_cfg, "trailing_len=" + std::to_string(trailing_len));
-        debug_trace_write_bin<int32_t>(trace_cfg, "input_text_tokens.i32.bin", text_tokens,
-                                       (size_t) n_tokens, "i32", {(int64_t) n_tokens});
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "prefill_len=" + std::to_string(prefill_len));
+        transformer_internal::debug_trace_write_text_line(trace_cfg, "trailing_len=" + std::to_string(trailing_len));
+        transformer_internal::debug_trace_write_bin(trace_cfg, "input_text_tokens.i32.bin", text_tokens,
+                                                    (size_t) n_tokens, "i32", {(int64_t) n_tokens});
         if (!prefill_embd.empty()) {
-            debug_trace_write_bin<float>(trace_cfg, "prefill_embd.f32.bin", prefill_embd.data(),
-                                         prefill_embd.size(), "f32",
-                                         {(int64_t) prefill_len, (int64_t) cfg.hidden_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, "prefill_embd.f32.bin", prefill_embd.data(),
+                                                        prefill_embd.size(), "f32",
+                                                        {(int64_t) prefill_len, (int64_t) cfg.hidden_size});
         }
         if (speaker_embd) {
-            debug_trace_write_bin<float>(trace_cfg, "speaker_embd.f32.bin", speaker_embd,
-                                         (size_t) cfg.hidden_size, "f32",
-                                         {(int64_t) cfg.hidden_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, "speaker_embd.f32.bin", speaker_embd,
+                                                        (size_t) cfg.hidden_size, "f32",
+                                                        {(int64_t) cfg.hidden_size});
         }
     }
 
@@ -3435,9 +3295,9 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
         if (trace_frame) {
             char raw_name[128];
             snprintf(raw_name, sizeof(raw_name), "frame%03d_cb0_logits_raw.f32.bin", frame);
-            debug_trace_write_bin<float>(trace_cfg, raw_name, logits.data(),
-                                         (size_t) cfg.codec_vocab_size, "f32",
-                                         {(int64_t) cfg.codec_vocab_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, raw_name, logits.data(),
+                                                        (size_t) cfg.codec_vocab_size, "f32",
+                                                        {(int64_t) cfg.codec_vocab_size});
         }
 
         // Suppress tokens in [codec_vocab_size - 1024, codec_vocab_size), except codec_eos_id
@@ -3463,9 +3323,9 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
         if (trace_frame) {
             char post_rules_name[128];
             snprintf(post_rules_name, sizeof(post_rules_name), "frame%03d_cb0_logits_post_rules.f32.bin", frame);
-            debug_trace_write_bin<float>(trace_cfg, post_rules_name, logits.data(),
-                                         (size_t) cfg.codec_vocab_size, "f32",
-                                         {(int64_t) cfg.codec_vocab_size});
+            transformer_internal::debug_trace_write_bin(trace_cfg, post_rules_name, logits.data(),
+                                                        (size_t) cfg.codec_vocab_size, "f32",
+                                                        {(int64_t) cfg.codec_vocab_size});
         }
 
         int32_t next_token;
@@ -3512,7 +3372,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
                 int32_t eos_token = next_token;
                 char eos_name[128];
                 snprintf(eos_name, sizeof(eos_name), "frame%03d_cb0_token.i32.bin", frame);
-                debug_trace_write_bin<int32_t>(trace_cfg, eos_name, &eos_token, 1, "i32", {1});
+                transformer_internal::debug_trace_write_bin(trace_cfg, eos_name, &eos_token, 1, "i32", {1});
             }
             break;
         }
@@ -3527,13 +3387,13 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
         if (trace_frame) {
             char token_name[128];
             snprintf(token_name, sizeof(token_name), "frame%03d_cb0_token.i32.bin", frame);
-            debug_trace_write_bin<int32_t>(trace_cfg, token_name, &frame_codes[0], 1, "i32", {1});
+            transformer_internal::debug_trace_write_bin(trace_cfg, token_name, &frame_codes[0], 1, "i32", {1});
 
             char hidden_name[128];
             snprintf(hidden_name, sizeof(hidden_name), "frame%03d_talker_hidden.f32.bin", frame);
-            debug_trace_write_bin<float>(trace_cfg, hidden_name, last_hidden_.data(),
-                                         last_hidden_.size(), "f32",
-                                         {(int64_t) last_hidden_.size()});
+            transformer_internal::debug_trace_write_bin(trace_cfg, hidden_name, last_hidden_.data(),
+                                                        last_hidden_.size(), "f32",
+                                                        {(int64_t) last_hidden_.size()});
         }
         
 #ifdef QWEN3_TTS_TIMING
@@ -3556,9 +3416,9 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
             char frame_codes_name[128];
             snprintf(frame_codes_name, sizeof(frame_codes_name),
                      "frame%03d_codec_tokens_cb0_15.i32.bin", frame);
-            debug_trace_write_bin<int32_t>(trace_cfg, frame_codes_name,
-                                           frame_codes.data(), frame_codes.size(), "i32",
-                                           {(int64_t) frame_codes.size()});
+            transformer_internal::debug_trace_write_bin(trace_cfg, frame_codes_name,
+                                                        frame_codes.data(), frame_codes.size(), "i32",
+                                                        {(int64_t) frame_codes.size()});
         }
         
         if (!is_thinking) {
