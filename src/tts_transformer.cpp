@@ -1,5 +1,6 @@
 #include "tts_transformer.h"
 #include "gguf_loader.h"
+#include "transformer/transformer_internal.h"
 
 #include <cmath>
 #include <cstring>
@@ -17,7 +18,9 @@
 
 namespace qwen3_tts {
 
-static std::string normalize_speaker_name(const std::string & name) {
+namespace transformer_internal {
+
+std::string normalize_speaker_name(const std::string & name) {
     std::string out = name;
     std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
         return (char) std::tolower(c);
@@ -25,14 +28,7 @@ static std::string normalize_speaker_name(const std::string & name) {
     return out;
 }
 
-struct debug_trace_config {
-    bool enabled = false;
-    std::string dir;
-    int32_t max_frames = 1;
-    int32_t max_code_steps = 15;
-};
-
-static int32_t parse_env_i32(const char * name, int32_t default_value, int32_t min_value, int32_t max_value) {
+int32_t parse_env_i32(const char * name, int32_t default_value, int32_t min_value, int32_t max_value) {
     const char * raw = std::getenv(name);
     if (!raw || raw[0] == '\0') {
         return default_value;
@@ -47,7 +43,7 @@ static int32_t parse_env_i32(const char * name, int32_t default_value, int32_t m
     return (int32_t) parsed;
 }
 
-static debug_trace_config init_debug_trace_config() {
+debug_trace_config init_debug_trace_config() {
     debug_trace_config cfg;
     const char * dir_env = std::getenv("QWEN3_TTS_DEBUG_DUMP_DIR");
     if (!dir_env || dir_env[0] == '\0') {
@@ -87,14 +83,16 @@ static debug_trace_config init_debug_trace_config() {
     return cfg;
 }
 
-static const debug_trace_config & get_debug_trace_config() {
+const debug_trace_config & get_debug_trace_config() {
     static debug_trace_config cfg = init_debug_trace_config();
     return cfg;
 }
 
-static bool debug_trace_should_dump_frame(const debug_trace_config & cfg, int32_t frame) {
+bool debug_trace_should_dump_frame(const debug_trace_config & cfg, int32_t frame) {
     return cfg.enabled && frame >= 0 && frame < cfg.max_frames;
 }
+
+} // namespace transformer_internal
 
 static std::string format_shape(const std::vector<int64_t> & shape) {
     std::ostringstream oss;
@@ -107,7 +105,7 @@ static std::string format_shape(const std::vector<int64_t> & shape) {
     return oss.str();
 }
 
-static void debug_trace_append_manifest(const debug_trace_config & cfg,
+static void debug_trace_append_manifest(const transformer_internal::debug_trace_config & cfg,
                                         const std::string & name,
                                         const char * dtype,
                                         size_t count,
@@ -124,7 +122,7 @@ static void debug_trace_append_manifest(const debug_trace_config & cfg,
 }
 
 template <typename T>
-static void debug_trace_write_bin(const debug_trace_config & cfg,
+static void debug_trace_write_bin(const transformer_internal::debug_trace_config & cfg,
                                   const std::string & name,
                                   const T * data,
                                   size_t count,
@@ -145,7 +143,7 @@ static void debug_trace_write_bin(const debug_trace_config & cfg,
     debug_trace_append_manifest(cfg, name, dtype, count, shape);
 }
 
-static void debug_trace_write_text_line(const debug_trace_config & cfg, const std::string & line) {
+static void debug_trace_write_text_line(const transformer_internal::debug_trace_config & cfg, const std::string & line) {
     if (!cfg.enabled) {
         return;
     }
@@ -595,7 +593,7 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
         "qwen3-tts.language_id",
     }, 2050);
 
-    cfg.tts_model_type = normalize_speaker_name(get_str_any({
+    cfg.tts_model_type = transformer_internal::normalize_speaker_name(get_str_any({
         "qwen3-tts.tts_model_type",
     }, "base"));
     cfg.supports_instruction = get_bool_any({
@@ -670,7 +668,7 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
                 continue;
             }
 
-            cfg.speaker_id_map[normalize_speaker_name(raw_name)] = spk_id;
+            cfg.speaker_id_map[transformer_internal::normalize_speaker_name(raw_name)] = spk_id;
         }
     }
 
@@ -2742,7 +2740,7 @@ bool TTSTransformer::get_named_speaker_embedding(const std::string & speaker_nam
         return false;
     }
 
-    const std::string key = normalize_speaker_name(speaker_name);
+    const std::string key = transformer_internal::normalize_speaker_name(speaker_name);
     auto it = model_.config.speaker_id_map.find(key);
     if (it == model_.config.speaker_id_map.end()) {
         error_msg_ = "Unknown speaker: " + speaker_name;
@@ -2837,8 +2835,8 @@ bool TTSTransformer::predict_codes_autoregressive_coreml(const float * hidden,
 
     const auto & cfg = model_.config;
     const int32_t n_steps = cfg.n_codebooks - 1;
-    const auto & trace_cfg = get_debug_trace_config();
-    const bool trace_frame_enabled = debug_trace_should_dump_frame(trace_cfg, trace_frame);
+    const auto & trace_cfg = transformer_internal::get_debug_trace_config();
+    const bool trace_frame_enabled = transformer_internal::debug_trace_should_dump_frame(trace_cfg, trace_frame);
 
     output.resize(n_steps);
     std::vector<float> logits_data(cfg.code_pred_vocab_size);
@@ -2978,8 +2976,8 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
     }
     
     const auto & cfg = model_.config;
-    const auto & trace_cfg = get_debug_trace_config();
-    const bool trace_frame_enabled = debug_trace_should_dump_frame(trace_cfg, trace_frame);
+    const auto & trace_cfg = transformer_internal::get_debug_trace_config();
+    const bool trace_frame_enabled = transformer_internal::debug_trace_should_dump_frame(trace_cfg, trace_frame);
 
 #ifdef QWEN3_TTS_TIMING
     using clk = std::chrono::high_resolution_clock;
@@ -3344,7 +3342,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     }
     
     const auto & cfg = model_.config;
-    const auto & trace_cfg = get_debug_trace_config();
+    const auto & trace_cfg = transformer_internal::get_debug_trace_config();
     if (trace_cfg.enabled) {
         debug_trace_write_text_line(trace_cfg, "hidden_size=" + std::to_string(cfg.hidden_size));
         debug_trace_write_text_line(trace_cfg, "codec_vocab_size=" + std::to_string(cfg.codec_vocab_size));
@@ -3433,7 +3431,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     std::vector<float> embd_row(cfg.hidden_size);
     
     for (int frame = 0; frame < max_len; ++frame) {
-        const bool trace_frame = debug_trace_should_dump_frame(trace_cfg, frame);
+        const bool trace_frame = transformer_internal::debug_trace_should_dump_frame(trace_cfg, frame);
         if (trace_frame) {
             char raw_name[128];
             snprintf(raw_name, sizeof(raw_name), "frame%03d_cb0_logits_raw.f32.bin", frame);
