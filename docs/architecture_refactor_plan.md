@@ -27,16 +27,19 @@ Current branch status on `refactor/architecture-split`:
 - Completed: talker runtime execution extracted into `src/transformer/transformer_runtime.cpp`
 - Completed: code predictor runtime execution extracted into `src/transformer/transformer_runtime_code_pred.cpp`
 - Completed: outer autoregressive generation extracted into `src/transformer/transformer_generate.cpp`
+- Completed: transformer private model/state/runtime members moved out of `src/tts_transformer.h` into `src/transformer/transformer_state_internal.h`
 - Confirmed after each completed step: local rebuild and test pass on the current Windows/CUDA workflow
 
 Current transformer split status:
 
+- Still in `src/tts_transformer.h`: private helper member declarations for graph/build/runtime operations
 - Still in `src/tts_transformer.cpp`: constructor/destructor facade, legacy forward wrappers, and free helpers
 - Now moved out of `src/tts_transformer.cpp`: debug trace helpers, model load/unload path, GGUF config parsing, tensor creation, tensor data loading, CoreML loader hookup, KV-cache lifecycle, scheduler reserve warmup, embedding lookup helpers, named speaker lookup, prefill embedding construction, talker graph builders, code predictor graph builders, talker runtime execution, code predictor runtime execution, outer autoregressive generation
+- Now moved out of `src/tts_transformer.h`: `transformer_layer`, `tts_transformer_model`, `tts_transformer_state`, `tts_kv_cache`, timing state, CoreML/runtime members, and GGML/GGUF-heavy private storage details
 
 Recommended next step from this point:
 
-- Begin Phase 2 by moving remaining transformer implementation detail out of `src/tts_transformer.h` into internal headers
+- Continue Phase 2 by replacing the remaining private helper member declarations in `src/tts_transformer.h` with narrower internal helpers or a fuller pimpl boundary
 
 Guardrail for ongoing work:
 
@@ -94,7 +97,7 @@ This is the single biggest refactor target.
 
 ### 2. The public transformer header is carrying implementation-only data
 
-`src/tts_transformer.h` exposes:
+`src/tts_transformer.h` originally exposed:
 
 - `tts_transformer_model`
 - `tts_transformer_state`
@@ -102,7 +105,7 @@ This is the single biggest refactor target.
 - `transformer_layer`
 - most private helper declarations
 
-That makes the public header much heavier than it needs to be and couples downstream compilation to internal graph/model layout details.
+The struct/type exposure has now been moved behind `src/transformer/transformer_state_internal.h`, but the public header still carries a large set of private helper member declarations.
 
 ### 3. `Qwen3TTS` mixes orchestration with unrelated utility code
 

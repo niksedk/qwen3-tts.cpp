@@ -1,4 +1,5 @@
 #include "tts_transformer.h"
+#include "transformer/transformer_state_internal.h"
 #include "transformer/transformer_internal.h"
 
 #include <cstdio>
@@ -9,7 +10,7 @@ namespace qwen3_tts {
 bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const int32_t * token_ids,
                                            int32_t n_tokens, const char * input_name,
                                            const char * output_name, std::vector<float> & output) {
-    if (!model_.ctx) {
+    if (!impl_->model.ctx) {
         error_msg_ = "Model not loaded";
         return false;
     }
@@ -36,8 +37,8 @@ bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const
     }
 
     struct ggml_init_params params = {
-        /*.mem_size   =*/ state_.compute_meta.size(),
-        /*.mem_buffer =*/ state_.compute_meta.data(),
+        /*.mem_size   =*/ impl_->state.compute_meta.size(),
+        /*.mem_buffer =*/ impl_->state.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
 
@@ -55,7 +56,7 @@ bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const
 
     ggml_build_forward_expand(gf, rows);
 
-    if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
+    if (!ggml_backend_sched_alloc_graph(impl_->state.sched, gf)) {
         error_msg_ = "Failed to allocate embedding lookup graph";
         ggml_free(ctx0);
         return false;
@@ -64,9 +65,9 @@ bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const
     struct ggml_tensor * inp = ggml_graph_get_tensor(gf, input_name);
     ggml_backend_tensor_set(inp, token_ids, 0, n_tokens * sizeof(int32_t));
 
-    if (ggml_backend_sched_graph_compute(state_.sched, gf) != GGML_STATUS_SUCCESS) {
+    if (ggml_backend_sched_graph_compute(impl_->state.sched, gf) != GGML_STATUS_SUCCESS) {
         error_msg_ = "Failed to compute embedding lookup graph";
-        ggml_backend_sched_reset(state_.sched);
+        ggml_backend_sched_reset(impl_->state.sched);
         ggml_free(ctx0);
         return false;
     }
@@ -74,7 +75,7 @@ bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const
     struct ggml_tensor * out = ggml_graph_get_tensor(gf, output_name);
     if (!out) {
         error_msg_ = "Failed to find embedding lookup output tensor";
-        ggml_backend_sched_reset(state_.sched);
+        ggml_backend_sched_reset(impl_->state.sched);
         ggml_free(ctx0);
         return false;
     }
@@ -82,7 +83,7 @@ bool TTSTransformer::lookup_embedding_rows(struct ggml_tensor * embedding, const
     output.resize((size_t) embedding->ne[0] * n_tokens);
     ggml_backend_tensor_get(out, output.data(), 0, output.size() * sizeof(float));
 
-    ggml_backend_sched_reset(state_.sched);
+    ggml_backend_sched_reset(impl_->state.sched);
     ggml_free(ctx0);
     return true;
 }
@@ -111,11 +112,11 @@ bool TTSTransformer::lookup_single_embedding_row(struct ggml_tensor * embedding,
         return true;
     }
     if (embedding->type == GGML_TYPE_F16) {
-        embd_row_fp16_scratch_.resize((size_t) embd_dim);
-        ggml_backend_tensor_get(embedding, embd_row_fp16_scratch_.data(),
+        impl_->embd_row_fp16_scratch.resize((size_t) embd_dim);
+        ggml_backend_tensor_get(embedding, impl_->embd_row_fp16_scratch.data(),
                                 row_offset, (size_t) embd_dim * sizeof(ggml_fp16_t));
         for (int64_t i = 0; i < embd_dim; ++i) {
-            out_row[i] = ggml_fp16_to_fp32(embd_row_fp16_scratch_[i]);
+            out_row[i] = ggml_fp16_to_fp32(impl_->embd_row_fp16_scratch[i]);
         }
         return true;
     }
@@ -132,7 +133,7 @@ bool TTSTransformer::lookup_single_embedding_row(struct ggml_tensor * embedding,
 
 bool TTSTransformer::project_text_tokens(const int32_t * text_tokens, int32_t n_tokens,
                                          std::vector<float> & output) {
-    if (!model_.ctx) {
+    if (!impl_->model.ctx) {
         error_msg_ = "Model not loaded";
         return false;
     }
@@ -142,8 +143,8 @@ bool TTSTransformer::project_text_tokens(const int32_t * text_tokens, int32_t n_
     }
 
     struct ggml_init_params params = {
-        /*.mem_size   =*/ state_.compute_meta.size(),
-        /*.mem_buffer =*/ state_.compute_meta.data(),
+        /*.mem_size   =*/ impl_->state.compute_meta.size(),
+        /*.mem_buffer =*/ impl_->state.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
 
@@ -154,18 +155,18 @@ bool TTSTransformer::project_text_tokens(const int32_t * text_tokens, int32_t n_
     ggml_set_name(inp_tokens, "inp_text_tokens");
     ggml_set_input(inp_tokens);
 
-    struct ggml_tensor * cur = ggml_get_rows(ctx0, model_.text_embd, inp_tokens);
-    cur = ggml_mul_mat(ctx0, model_.text_proj_fc1, cur);
-    cur = ggml_add(ctx0, cur, model_.text_proj_fc1_bias);
+    struct ggml_tensor * cur = ggml_get_rows(ctx0, impl_->model.text_embd, inp_tokens);
+    cur = ggml_mul_mat(ctx0, impl_->model.text_proj_fc1, cur);
+    cur = ggml_add(ctx0, cur, impl_->model.text_proj_fc1_bias);
     cur = ggml_silu(ctx0, cur);
-    cur = ggml_mul_mat(ctx0, model_.text_proj_fc2, cur);
-    cur = ggml_add(ctx0, cur, model_.text_proj_fc2_bias);
+    cur = ggml_mul_mat(ctx0, impl_->model.text_proj_fc2, cur);
+    cur = ggml_add(ctx0, cur, impl_->model.text_proj_fc2_bias);
 
     ggml_set_name(cur, "text_proj_out");
     ggml_set_output(cur);
     ggml_build_forward_expand(gf, cur);
 
-    if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
+    if (!ggml_backend_sched_alloc_graph(impl_->state.sched, gf)) {
         error_msg_ = "Failed to allocate text projection graph";
         ggml_free(ctx0);
         return false;
@@ -174,9 +175,9 @@ bool TTSTransformer::project_text_tokens(const int32_t * text_tokens, int32_t n_
     struct ggml_tensor * inp = ggml_graph_get_tensor(gf, "inp_text_tokens");
     ggml_backend_tensor_set(inp, text_tokens, 0, n_tokens * sizeof(int32_t));
 
-    if (ggml_backend_sched_graph_compute(state_.sched, gf) != GGML_STATUS_SUCCESS) {
+    if (ggml_backend_sched_graph_compute(impl_->state.sched, gf) != GGML_STATUS_SUCCESS) {
         error_msg_ = "Failed to compute text projection graph";
-        ggml_backend_sched_reset(state_.sched);
+        ggml_backend_sched_reset(impl_->state.sched);
         ggml_free(ctx0);
         return false;
     }
@@ -184,15 +185,15 @@ bool TTSTransformer::project_text_tokens(const int32_t * text_tokens, int32_t n_
     struct ggml_tensor * out = ggml_graph_get_tensor(gf, "text_proj_out");
     if (!out) {
         error_msg_ = "Failed to find text projection output tensor";
-        ggml_backend_sched_reset(state_.sched);
+        ggml_backend_sched_reset(impl_->state.sched);
         ggml_free(ctx0);
         return false;
     }
 
-    output.resize((size_t) model_.config.hidden_size * n_tokens);
+    output.resize((size_t) impl_->model.config.hidden_size * n_tokens);
     ggml_backend_tensor_get(out, output.data(), 0, output.size() * sizeof(float));
 
-    ggml_backend_sched_reset(state_.sched);
+    ggml_backend_sched_reset(impl_->state.sched);
     ggml_free(ctx0);
     return true;
 }
@@ -216,7 +217,7 @@ bool TTSTransformer::build_prefill_graph(const int32_t * text_tokens, int32_t n_
     fprintf(stderr, "  build_prefill_graph: n_tokens=%d, n_instruct=%d, has_speaker=%s\n",
             n_tokens, n_instruct_tokens, speaker_embd ? "yes" : "no");
 
-    const auto & cfg = model_.config;
+    const auto & cfg = impl_->model.config;
     const int32_t hidden_size = cfg.hidden_size;
 
     int32_t special_tokens[3] = {
@@ -266,7 +267,7 @@ bool TTSTransformer::build_prefill_graph(const int32_t * text_tokens, int32_t n_
     }
 
     std::vector<float> codec_prefill_embed;
-    if (!lookup_embedding_rows(model_.codec_embd, codec_prefill_tokens.data(),
+    if (!lookup_embedding_rows(impl_->model.codec_embd, codec_prefill_tokens.data(),
                                (int32_t) codec_prefill_tokens.size(),
                                "inp_codec_prefill_tokens", "codec_prefill_rows",
                                codec_prefill_embed)) {
@@ -275,7 +276,7 @@ bool TTSTransformer::build_prefill_graph(const int32_t * text_tokens, int32_t n_
 
     int32_t codec_tail_tokens[2] = { cfg.codec_pad_id, cfg.codec_bos_id };
     std::vector<float> codec_tail_embed;
-    if (!lookup_embedding_rows(model_.codec_embd, codec_tail_tokens, 2,
+    if (!lookup_embedding_rows(impl_->model.codec_embd, codec_tail_tokens, 2,
                                "inp_codec_tail_tokens", "codec_tail_rows",
                                codec_tail_embed)) {
         return false;
@@ -363,28 +364,28 @@ bool TTSTransformer::build_prefill_graph(const int32_t * text_tokens, int32_t n_
 
 bool TTSTransformer::get_named_speaker_embedding(const std::string & speaker_name,
                                                  std::vector<float> & speaker_embedding) {
-    if (!model_.ctx) {
+    if (!impl_->model.ctx) {
         error_msg_ = "Model not loaded";
         return false;
     }
-    if (!model_.codec_embd) {
+    if (!impl_->model.codec_embd) {
         error_msg_ = "Model missing codec embedding tensor";
         return false;
     }
-    if (model_.config.speaker_id_map.empty()) {
+    if (impl_->model.config.speaker_id_map.empty()) {
         error_msg_ = "No speaker map found in model metadata";
         return false;
     }
 
     const std::string key = transformer_internal::normalize_speaker_name(speaker_name);
-    auto it = model_.config.speaker_id_map.find(key);
-    if (it == model_.config.speaker_id_map.end()) {
+    auto it = impl_->model.config.speaker_id_map.find(key);
+    if (it == impl_->model.config.speaker_id_map.end()) {
         error_msg_ = "Unknown speaker: " + speaker_name;
         return false;
     }
 
-    speaker_embedding.resize(model_.config.hidden_size);
-    if (!lookup_single_embedding_row(model_.codec_embd, it->second, speaker_embedding.data())) {
+    speaker_embedding.resize(impl_->model.config.hidden_size);
+    if (!lookup_single_embedding_row(impl_->model.codec_embd, it->second, speaker_embedding.data())) {
         if (error_msg_.empty()) {
             error_msg_ = "Failed to lookup speaker embedding for speaker: " + speaker_name;
         }

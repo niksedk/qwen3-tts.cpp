@@ -1,4 +1,5 @@
 #include "tts_transformer.h"
+#include "transformer/transformer_state_internal.h"
 #include "transformer/transformer_internal.h"
 
 #include <algorithm>
@@ -38,10 +39,10 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     tts_timing timing = {};
     auto t_gen_start = clk::now();
     auto t0 = t_gen_start, t1 = t_gen_start;
-    timing_ = &timing;
+    impl_->timing = &timing;
 #endif
 
-    if (!model_.ctx) {
+    if (!impl_->model.ctx) {
         error_msg_ = "Model not loaded";
         return false;
     }
@@ -58,7 +59,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
         return true;
     }
 
-    const auto & cfg = model_.config;
+    const auto & cfg = impl_->model.config;
     const auto & trace_cfg = transformer_internal::get_debug_trace_config();
     if (trace_cfg.enabled) {
         transformer_internal::debug_trace_write_text_line(trace_cfg, "hidden_size=" + std::to_string(cfg.hidden_size));
@@ -107,14 +108,14 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     }
 
     const int32_t required_ctx = prefill_len + max_len + 8;
-    if (state_.cache.n_ctx < required_ctx || state_.cache.n_ctx > std::max<int32_t>(required_ctx * 2, 512)) {
+    if (impl_->state.cache.n_ctx < required_ctx || impl_->state.cache.n_ctx > std::max<int32_t>(required_ctx * 2, 512)) {
         if (!init_kv_cache(required_ctx)) {
             return false;
         }
     }
     clear_kv_cache();
 
-    if (state_.code_pred_cache.n_ctx < 16) {
+    if (impl_->state.code_pred_cache.n_ctx < 16) {
         if (!init_code_pred_kv_cache(16)) {
             return false;
         }
@@ -219,7 +220,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
             }
 
             std::discrete_distribution<int32_t> dist(probs.begin(), probs.end());
-            next_token = dist(rng_);
+            next_token = dist(impl_->rng);
         }
 
         if (next_token == cfg.codec_eos_id) {
@@ -295,7 +296,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
 #ifdef QWEN3_TTS_TIMING
         t0 = clk::now();
 #endif
-        if (!lookup_single_embedding_row(model_.codec_embd, frame_codes[0], embd_row.data())) {
+        if (!lookup_single_embedding_row(impl_->model.codec_embd, frame_codes[0], embd_row.data())) {
             return false;
         }
         for (int32_t h = 0; h < cfg.hidden_size; ++h) {
@@ -304,7 +305,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
 
         for (int cb = 1; cb < cfg.n_codebooks; ++cb) {
             int32_t code_token = frame_codes[cb];
-            if (!lookup_single_embedding_row(model_.code_pred_embd[cb - 1], code_token, embd_row.data())) {
+            if (!lookup_single_embedding_row(impl_->model.code_pred_embd[cb - 1], code_token, embd_row.data())) {
                 return false;
             }
             for (int32_t h = 0; h < cfg.hidden_size; ++h) {
@@ -339,7 +340,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
 
 #ifdef QWEN3_TTS_TIMING
     timing.t_generate_total_ms = std::chrono::duration<double, std::milli>(clk::now() - t_gen_start).count();
-    timing_ = nullptr;
+    impl_->timing = nullptr;
     const auto & t = timing;
     int nf = t.n_frames;
     fprintf(stderr, "\n=== Detailed Generation Timing (%d frames) ===\n", nf);
@@ -357,9 +358,9 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     fprintf(stderr, "      Compute:        %8.1f ms   (%.1f ms/frame)\n", t.t_talker_compute_ms, nf > 0 ? t.t_talker_compute_ms / nf : 0.0);
     fprintf(stderr, "      Data I/O:       %8.1f ms   (%.1f ms/frame)\n", t.t_talker_data_ms, nf > 0 ? t.t_talker_data_ms / nf : 0.0);
     fprintf(stderr, "\n  Code predictor (total / per-frame):\n");
-    fprintf(stderr, "    Backend:          %s\n", use_coreml_code_predictor_ ? "CoreML (CPU+NE)" : "GGML");
-    if (use_coreml_code_predictor_ && !coreml_code_predictor_path_.empty()) {
-        fprintf(stderr, "    CoreML model:     %s\n", coreml_code_predictor_path_.c_str());
+    fprintf(stderr, "    Backend:          %s\n", impl_->use_coreml_code_predictor ? "CoreML (CPU+NE)" : "GGML");
+    if (impl_->use_coreml_code_predictor && !impl_->coreml_code_predictor_path.empty()) {
+        fprintf(stderr, "    CoreML model:     %s\n", impl_->coreml_code_predictor_path.c_str());
     }
     fprintf(stderr, "    Total:            %8.1f ms   (%.1f ms/frame)\n", t.t_code_pred_ms, nf > 0 ? t.t_code_pred_ms / nf : 0.0);
     fprintf(stderr, "      Init/KV/embed:  %8.1f ms   (%.1f ms/frame)\n", t.t_code_pred_init_ms, nf > 0 ? t.t_code_pred_init_ms / nf : 0.0);

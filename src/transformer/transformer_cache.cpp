@@ -1,4 +1,5 @@
 #include "tts_transformer.h"
+#include "transformer/transformer_state_internal.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -17,16 +18,16 @@ void reset_scheduler_reserve_state(tts_transformer_state & state) {
 } // namespace
 
 bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
-    const auto & cfg = model_.config;
+    const auto & cfg = impl_->model.config;
 
-    free_tts_kv_cache(state_.cache);
+    free_tts_kv_cache(impl_->state.cache);
 
-    state_.cache.n_ctx = n_ctx;
-    state_.cache.n_used = 0;
-    state_.cache.head_dim = cfg.head_dim;
-    state_.cache.n_kv_heads = cfg.n_key_value_heads;
-    state_.cache.n_layers = cfg.n_layers;
-    reset_scheduler_reserve_state(state_);
+    impl_->state.cache.n_ctx = n_ctx;
+    impl_->state.cache.n_used = 0;
+    impl_->state.cache.head_dim = cfg.head_dim;
+    impl_->state.cache.n_kv_heads = cfg.n_key_value_heads;
+    impl_->state.cache.n_layers = cfg.n_layers;
+    reset_scheduler_reserve_state(impl_->state);
 
     const size_t n_tensors = cfg.n_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
@@ -37,29 +38,29 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
         /*.no_alloc   =*/ true,
     };
 
-    state_.cache.ctx = ggml_init(params);
-    if (!state_.cache.ctx) {
+    impl_->state.cache.ctx = ggml_init(params);
+    if (!impl_->state.cache.ctx) {
         error_msg_ = "Failed to create KV cache context";
         return false;
     }
 
-    state_.cache.k_cache.resize(cfg.n_layers);
-    state_.cache.v_cache.resize(cfg.n_layers);
+    impl_->state.cache.k_cache.resize(cfg.n_layers);
+    impl_->state.cache.v_cache.resize(cfg.n_layers);
 
     for (int il = 0; il < cfg.n_layers; ++il) {
-        state_.cache.k_cache[il] = ggml_new_tensor_3d(
-            state_.cache.ctx, GGML_TYPE_F16,
+        impl_->state.cache.k_cache[il] = ggml_new_tensor_3d(
+            impl_->state.cache.ctx, GGML_TYPE_F16,
             cfg.head_dim, cfg.n_key_value_heads, n_ctx);
-        ggml_format_name(state_.cache.k_cache[il], "k_cache_%d", il);
+        ggml_format_name(impl_->state.cache.k_cache[il], "k_cache_%d", il);
 
-        state_.cache.v_cache[il] = ggml_new_tensor_3d(
-            state_.cache.ctx, GGML_TYPE_F16,
+        impl_->state.cache.v_cache[il] = ggml_new_tensor_3d(
+            impl_->state.cache.ctx, GGML_TYPE_F16,
             cfg.head_dim, cfg.n_key_value_heads, n_ctx);
-        ggml_format_name(state_.cache.v_cache[il], "v_cache_%d", il);
+        ggml_format_name(impl_->state.cache.v_cache[il], "v_cache_%d", il);
     }
 
-    state_.cache.buffer = ggml_backend_alloc_ctx_tensors(state_.cache.ctx, state_.backend);
-    if (!state_.cache.buffer) {
+    impl_->state.cache.buffer = ggml_backend_alloc_ctx_tensors(impl_->state.cache.ctx, impl_->state.backend);
+    if (!impl_->state.cache.buffer) {
         error_msg_ = "Failed to allocate KV cache buffer";
         return false;
     }
@@ -68,20 +69,20 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
 }
 
 void TTSTransformer::clear_kv_cache() {
-    state_.cache.n_used = 0;
+    impl_->state.cache.n_used = 0;
 }
 
 bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
-    const auto & cfg = model_.config;
+    const auto & cfg = impl_->model.config;
 
-    free_tts_kv_cache(state_.code_pred_cache);
+    free_tts_kv_cache(impl_->state.code_pred_cache);
 
-    state_.code_pred_cache.n_ctx = n_ctx;
-    state_.code_pred_cache.n_used = 0;
-    state_.code_pred_cache.head_dim = cfg.code_pred_head_dim;
-    state_.code_pred_cache.n_kv_heads = cfg.code_pred_n_key_value_heads;
-    state_.code_pred_cache.n_layers = cfg.code_pred_layers;
-    reset_scheduler_reserve_state(state_);
+    impl_->state.code_pred_cache.n_ctx = n_ctx;
+    impl_->state.code_pred_cache.n_used = 0;
+    impl_->state.code_pred_cache.head_dim = cfg.code_pred_head_dim;
+    impl_->state.code_pred_cache.n_kv_heads = cfg.code_pred_n_key_value_heads;
+    impl_->state.code_pred_cache.n_layers = cfg.code_pred_layers;
+    reset_scheduler_reserve_state(impl_->state);
 
     const size_t n_tensors = cfg.code_pred_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
@@ -92,29 +93,29 @@ bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
         /*.no_alloc   =*/ true,
     };
 
-    state_.code_pred_cache.ctx = ggml_init(params);
-    if (!state_.code_pred_cache.ctx) {
+    impl_->state.code_pred_cache.ctx = ggml_init(params);
+    if (!impl_->state.code_pred_cache.ctx) {
         error_msg_ = "Failed to create code predictor KV cache context";
         return false;
     }
 
-    state_.code_pred_cache.k_cache.resize(cfg.code_pred_layers);
-    state_.code_pred_cache.v_cache.resize(cfg.code_pred_layers);
+    impl_->state.code_pred_cache.k_cache.resize(cfg.code_pred_layers);
+    impl_->state.code_pred_cache.v_cache.resize(cfg.code_pred_layers);
 
     for (int il = 0; il < cfg.code_pred_layers; ++il) {
-        state_.code_pred_cache.k_cache[il] = ggml_new_tensor_3d(
-            state_.code_pred_cache.ctx, GGML_TYPE_F16,
+        impl_->state.code_pred_cache.k_cache[il] = ggml_new_tensor_3d(
+            impl_->state.code_pred_cache.ctx, GGML_TYPE_F16,
             cfg.code_pred_head_dim, cfg.code_pred_n_key_value_heads, n_ctx);
-        ggml_format_name(state_.code_pred_cache.k_cache[il], "code_pred_k_cache_%d", il);
+        ggml_format_name(impl_->state.code_pred_cache.k_cache[il], "code_pred_k_cache_%d", il);
 
-        state_.code_pred_cache.v_cache[il] = ggml_new_tensor_3d(
-            state_.code_pred_cache.ctx, GGML_TYPE_F16,
+        impl_->state.code_pred_cache.v_cache[il] = ggml_new_tensor_3d(
+            impl_->state.code_pred_cache.ctx, GGML_TYPE_F16,
             cfg.code_pred_head_dim, cfg.code_pred_n_key_value_heads, n_ctx);
-        ggml_format_name(state_.code_pred_cache.v_cache[il], "code_pred_v_cache_%d", il);
+        ggml_format_name(impl_->state.code_pred_cache.v_cache[il], "code_pred_v_cache_%d", il);
     }
 
-    state_.code_pred_cache.buffer = ggml_backend_alloc_ctx_tensors(state_.code_pred_cache.ctx, state_.backend);
-    if (!state_.code_pred_cache.buffer) {
+    impl_->state.code_pred_cache.buffer = ggml_backend_alloc_ctx_tensors(impl_->state.code_pred_cache.ctx, impl_->state.backend);
+    if (!impl_->state.code_pred_cache.buffer) {
         error_msg_ = "Failed to allocate code predictor KV cache buffer";
         return false;
     }
@@ -123,23 +124,23 @@ bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {
 }
 
 void TTSTransformer::clear_code_pred_kv_cache() {
-    state_.code_pred_cache.n_used = 0;
+    impl_->state.code_pred_cache.n_used = 0;
 }
 
 void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t required_ctx) {
-    if (!state_.sched) {
+    if (!impl_->state.sched) {
         return;
     }
-    if (state_.sched_reserve_failed) {
+    if (impl_->state.sched_reserve_failed) {
         return;
     }
-    if (state_.code_pred_cache.n_ctx < 16) {
+    if (impl_->state.code_pred_cache.n_ctx < 16) {
         return;
     }
 
-    if (state_.sched_reserved &&
-        state_.sched_reserved_ctx >= required_ctx &&
-        state_.sched_reserved_prefill_len >= prefill_len) {
+    if (impl_->state.sched_reserved &&
+        impl_->state.sched_reserved_ctx >= required_ctx &&
+        impl_->state.sched_reserved_prefill_len >= prefill_len) {
         return;
     }
 
@@ -151,8 +152,8 @@ void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t
             }
             return false;
         }
-        const bool ok = ggml_backend_sched_reserve(state_.sched, g);
-        ggml_backend_sched_reset(state_.sched);
+        const bool ok = ggml_backend_sched_reserve(impl_->state.sched, g);
+        ggml_backend_sched_reset(impl_->state.sched);
         if (!ok && first_failed_graph.empty()) {
             first_failed_graph = name;
         }
@@ -171,13 +172,13 @@ void TTSTransformer::maybe_reserve_scheduler_graphs(int32_t prefill_len, int32_t
     }
 
     if (ok) {
-        state_.sched_reserved = true;
-        state_.sched_reserve_failed = false;
-        state_.sched_reserved_ctx = required_ctx;
-        state_.sched_reserved_prefill_len = prefill_len;
+        impl_->state.sched_reserved = true;
+        impl_->state.sched_reserve_failed = false;
+        impl_->state.sched_reserved_ctx = required_ctx;
+        impl_->state.sched_reserved_prefill_len = prefill_len;
     } else {
-        state_.sched_reserved = false;
-        state_.sched_reserve_failed = true;
+        impl_->state.sched_reserved = false;
+        impl_->state.sched_reserve_failed = true;
         const char * graph_name = first_failed_graph.empty() ? "unknown graph" : first_failed_graph.c_str();
         fprintf(stderr,
                 "  Scheduler reserve failed at %s; disabling reserve warmup and using dynamic graph allocation\n",

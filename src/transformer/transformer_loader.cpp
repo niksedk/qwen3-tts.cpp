@@ -1,4 +1,5 @@
 #include "tts_transformer.h"
+#include "transformer/transformer_state_internal.h"
 #include "gguf_loader.h"
 #include "transformer/transformer_internal.h"
 
@@ -13,42 +14,42 @@
 namespace qwen3_tts {
 
 void TTSTransformer::unload_model() {
-    free_tts_kv_cache(state_.cache);
-    free_tts_kv_cache(state_.code_pred_cache);
-    free_transformer_model(model_);
+    free_tts_kv_cache(impl_->state.cache);
+    free_tts_kv_cache(impl_->state.code_pred_cache);
+    free_transformer_model(impl_->model);
 
-    coreml_code_predictor_.unload();
-    use_coreml_code_predictor_ = false;
-    coreml_code_predictor_path_.clear();
-    skip_ggml_code_pred_layers_ = false;
+    impl_->coreml_code_predictor.unload();
+    impl_->use_coreml_code_predictor = false;
+    impl_->coreml_code_predictor_path.clear();
+    impl_->skip_ggml_code_pred_layers = false;
 
-    if (state_.sched) {
-        ggml_backend_sched_free(state_.sched);
-        state_.sched = nullptr;
+    if (impl_->state.sched) {
+        ggml_backend_sched_free(impl_->state.sched);
+        impl_->state.sched = nullptr;
     }
-    state_.sched_reserved = false;
-    state_.sched_reserve_failed = false;
-    state_.sched_reserved_ctx = 0;
-    state_.sched_reserved_prefill_len = 0;
-    if (state_.backend) {
-        release_preferred_backend(state_.backend);
-        state_.backend = nullptr;
+    impl_->state.sched_reserved = false;
+    impl_->state.sched_reserve_failed = false;
+    impl_->state.sched_reserved_ctx = 0;
+    impl_->state.sched_reserved_prefill_len = 0;
+    if (impl_->state.backend) {
+        release_preferred_backend(impl_->state.backend);
+        impl_->state.backend = nullptr;
     }
-    if (state_.backend_cpu) {
-        ggml_backend_free(state_.backend_cpu);
-        state_.backend_cpu = nullptr;
+    if (impl_->state.backend_cpu) {
+        ggml_backend_free(impl_->state.backend_cpu);
+        impl_->state.backend_cpu = nullptr;
     }
 
-    state_.compute_meta.clear();
-    state_.code_pred_mask.clear();
+    impl_->state.compute_meta.clear();
+    impl_->state.code_pred_mask.clear();
     last_hidden_.clear();
-    embd_row_fp16_scratch_.clear();
+    impl_->embd_row_fp16_scratch.clear();
 }
 
 bool TTSTransformer::load_model(const std::string & model_path) {
     unload_model();
 
-    skip_ggml_code_pred_layers_ = false;
+    impl_->skip_ggml_code_pred_layers = false;
 #if defined(__APPLE__)
     const char * use_coreml_env = std::getenv("QWEN3_TTS_USE_COREML");
     bool coreml_disabled = false;
@@ -73,9 +74,9 @@ bool TTSTransformer::load_model(const std::string & model_path) {
 
         struct stat st = {};
         if (stat(coreml_path.c_str(), &st) == 0) {
-            skip_ggml_code_pred_layers_ = true;
+            impl_->skip_ggml_code_pred_layers = true;
         } else if (use_coreml_env && use_coreml_env[0] != '\0') {
-            skip_ggml_code_pred_layers_ = true;
+            impl_->skip_ggml_code_pred_layers = true;
         }
     }
 #endif
@@ -105,23 +106,23 @@ bool TTSTransformer::load_model(const std::string & model_path) {
     }
 
     if (!load_tensor_data(model_path, ctx)) {
-        free_transformer_model(model_);
+        free_transformer_model(impl_->model);
         gguf_free(ctx);
         if (meta_ctx) ggml_free(meta_ctx);
         return false;
     }
 
-    if (!skip_ggml_code_pred_layers_) {
-        const auto & cfg = model_.config;
+    if (!impl_->skip_ggml_code_pred_layers) {
+        const auto & cfg = impl_->model.config;
         const bool projection_required = cfg.hidden_size > cfg.code_pred_hidden_size;
         const bool likely_legacy_1p7 = (cfg.hidden_size > 1024 &&
-                                        model_.code_pred_small_to_mtp_weight == nullptr);
+                                        impl_->model.code_pred_small_to_mtp_weight == nullptr);
         if ((projection_required || likely_legacy_1p7) &&
-            model_.code_pred_small_to_mtp_weight == nullptr) {
+            impl_->model.code_pred_small_to_mtp_weight == nullptr) {
             error_msg_ =
                 "Model is missing code_pred.small_to_mtp projection weights. "
                 "Re-convert with the updated scripts/convert_tts_to_gguf.py.";
-            free_transformer_model(model_);
+            free_transformer_model(impl_->model);
             gguf_free(ctx);
             if (meta_ctx) ggml_free(meta_ctx);
             return false;
@@ -131,37 +132,37 @@ bool TTSTransformer::load_model(const std::string & model_path) {
     gguf_free(ctx);
     if (meta_ctx) ggml_free(meta_ctx);
 
-    state_.backend = init_preferred_backend("TTSTransformer", &error_msg_);
-    if (!state_.backend) {
+    impl_->state.backend = init_preferred_backend("TTSTransformer", &error_msg_);
+    if (!impl_->state.backend) {
         return false;
     }
-    ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
+    ggml_backend_dev_t device = ggml_backend_get_device(impl_->state.backend);
     const char * device_name = device ? ggml_backend_dev_name(device) : "Unknown";
     fprintf(stderr, "  TTSTransformer backend: %s\n", device_name);
 
     if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
-        state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-        if (!state_.backend_cpu) {
+        impl_->state.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        if (!impl_->state.backend_cpu) {
             error_msg_ = "Failed to initialize CPU fallback backend for TTSTransformer";
             return false;
         }
     }
 
     std::vector<ggml_backend_t> backends;
-    backends.push_back(state_.backend);
-    if (state_.backend_cpu) {
-        backends.push_back(state_.backend_cpu);
+    backends.push_back(impl_->state.backend);
+    if (impl_->state.backend_cpu) {
+        backends.push_back(impl_->state.backend_cpu);
     }
-    state_.sched = ggml_backend_sched_new(backends.data(), nullptr, (int) backends.size(), QWEN3_TTS_MAX_NODES, false, true);
-    if (!state_.sched) {
+    impl_->state.sched = ggml_backend_sched_new(backends.data(), nullptr, (int) backends.size(), QWEN3_TTS_MAX_NODES, false, true);
+    if (!impl_->state.sched) {
         error_msg_ = "Failed to create backend scheduler";
         return false;
     }
 
-    state_.compute_meta.resize(ggml_tensor_overhead() * QWEN3_TTS_MAX_NODES + ggml_graph_overhead());
-    state_.code_pred_compute_meta.resize(15);
+    impl_->state.compute_meta.resize(ggml_tensor_overhead() * QWEN3_TTS_MAX_NODES + ggml_graph_overhead());
+    impl_->state.code_pred_compute_meta.resize(15);
     for (int i = 0; i < 15; ++i) {
-        state_.code_pred_compute_meta[i].resize(ggml_tensor_overhead() * QWEN3_TTS_MAX_NODES + ggml_graph_overhead());
+        impl_->state.code_pred_compute_meta[i].resize(ggml_tensor_overhead() * QWEN3_TTS_MAX_NODES + ggml_graph_overhead());
     }
 
     if (!try_init_coreml_code_predictor(model_path)) {
@@ -173,8 +174,8 @@ bool TTSTransformer::load_model(const std::string & model_path) {
 
 bool TTSTransformer::try_init_coreml_code_predictor(const std::string & model_path) {
     (void) model_path;
-    use_coreml_code_predictor_ = false;
-    coreml_code_predictor_path_.clear();
+    impl_->use_coreml_code_predictor = false;
+    impl_->coreml_code_predictor_path.clear();
 
     const char * use_coreml_env = std::getenv("QWEN3_TTS_USE_COREML");
     bool coreml_disabled = false;
@@ -206,21 +207,21 @@ bool TTSTransformer::try_init_coreml_code_predictor(const std::string & model_pa
         coreml_path = model_dir + "/coreml/code_predictor.mlpackage";
     }
 
-    if (!coreml_code_predictor_.load(coreml_path, model_.config.n_codebooks - 1)) {
-        if (skip_ggml_code_pred_layers_) {
-            error_msg_ = "CoreML code predictor load failed in strict mode: " + coreml_code_predictor_.get_error();
+    if (!impl_->coreml_code_predictor.load(coreml_path, impl_->model.config.n_codebooks - 1)) {
+        if (impl_->skip_ggml_code_pred_layers) {
+            error_msg_ = "CoreML code predictor load failed in strict mode: " + impl_->coreml_code_predictor.get_error();
             return false;
         } else {
             fprintf(stderr, "  CoreML code predictor load failed: %s\n",
-                    coreml_code_predictor_.get_error().c_str());
+                    impl_->coreml_code_predictor.get_error().c_str());
             fprintf(stderr, "  Falling back to GGML code predictor\n");
             return true;
         }
     }
 
-    use_coreml_code_predictor_ = true;
-    coreml_code_predictor_path_ = coreml_path;
-    fprintf(stderr, "  CoreML code predictor enabled: %s\n", coreml_code_predictor_path_.c_str());
+    impl_->use_coreml_code_predictor = true;
+    impl_->coreml_code_predictor_path = coreml_path;
+    fprintf(stderr, "  CoreML code predictor enabled: %s\n", impl_->coreml_code_predictor_path.c_str());
     return true;
 #endif
 }
@@ -304,7 +305,7 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
         return default_val;
     };
 
-    auto & cfg = model_.config;
+    auto & cfg = impl_->model.config;
     cfg.text_vocab_size = get_u32_any({
         "qwen3-tts.text.vocab_size",
         "qwen3-tts.text_vocab_size",
@@ -529,7 +530,7 @@ bool TTSTransformer::parse_config(struct gguf_context * ctx) {
 
 bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
     const int64_t n_tensors = gguf_get_n_tensors(ctx);
-    const auto & cfg = model_.config;
+    const auto & cfg = impl_->model.config;
 
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
     struct ggml_init_params params = {
@@ -538,16 +539,16 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
         /*.no_alloc   =*/ true,
     };
 
-    model_.ctx = ggml_init(params);
-    if (!model_.ctx) {
+    impl_->model.ctx = ggml_init(params);
+    if (!impl_->model.ctx) {
         error_msg_ = "Failed to create GGML context";
         return false;
     }
 
-    model_.layers.resize(cfg.n_layers);
-    model_.code_pred_layers.resize(cfg.code_pred_layers);
-    model_.code_pred_embd.resize(cfg.n_codebooks - 1);
-    model_.code_pred_head.resize(cfg.n_codebooks - 1);
+    impl_->model.layers.resize(cfg.n_layers);
+    impl_->model.code_pred_layers.resize(cfg.code_pred_layers);
+    impl_->model.code_pred_embd.resize(cfg.n_codebooks - 1);
+    impl_->model.code_pred_head.resize(cfg.n_codebooks - 1);
 
     for (int64_t i = 0; i < n_tensors; ++i) {
         const char * name = gguf_get_tensor_name(ctx, i);
@@ -647,7 +648,7 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
             ne[0] = cfg.code_pred_hidden_size;
             n_dims = 1;
         } else if (strstr(name, "code_pred.blk.")) {
-            if (skip_ggml_code_pred_layers_) {
+            if (impl_->skip_ggml_code_pred_layers) {
                 continue;
             }
             int layer_idx = -1;
@@ -710,7 +711,7 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
                 continue;
             }
         } else if (strstr(name, "code_pred.lm_head.")) {
-            if (skip_ggml_code_pred_layers_) {
+            if (impl_->skip_ggml_code_pred_layers) {
                 continue;
             }
             int cb_idx = -1;
@@ -723,7 +724,7 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
                 continue;
             }
         } else if (strstr(name, "code_pred.output_norm.weight")) {
-            if (skip_ggml_code_pred_layers_) {
+            if (impl_->skip_ggml_code_pred_layers) {
                 continue;
             }
             ne[0] = cfg.code_pred_hidden_size;
@@ -732,35 +733,35 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
             continue;
         }
 
-        struct ggml_tensor * tensor = ggml_new_tensor(model_.ctx, type, n_dims, ne);
+        struct ggml_tensor * tensor = ggml_new_tensor(impl_->model.ctx, type, n_dims, ne);
         if (!tensor) {
             error_msg_ = "Failed to create tensor: " + std::string(name);
             return false;
         }
         ggml_set_name(tensor, name);
-        model_.tensors[name] = tensor;
+        impl_->model.tensors[name] = tensor;
 
         if (strstr(name, "talker.text_embd.weight")) {
-            model_.text_embd = tensor;
+            impl_->model.text_embd = tensor;
         } else if (strstr(name, "talker.text_proj.fc1.weight")) {
-            model_.text_proj_fc1 = tensor;
+            impl_->model.text_proj_fc1 = tensor;
         } else if (strstr(name, "talker.text_proj.fc1.bias")) {
-            model_.text_proj_fc1_bias = tensor;
+            impl_->model.text_proj_fc1_bias = tensor;
         } else if (strstr(name, "talker.text_proj.fc2.weight")) {
-            model_.text_proj_fc2 = tensor;
+            impl_->model.text_proj_fc2 = tensor;
         } else if (strstr(name, "talker.text_proj.fc2.bias")) {
-            model_.text_proj_fc2_bias = tensor;
+            impl_->model.text_proj_fc2_bias = tensor;
         } else if (strstr(name, "talker.codec_embd.weight")) {
-            model_.codec_embd = tensor;
+            impl_->model.codec_embd = tensor;
         } else if (strstr(name, "talker.codec_head.weight")) {
-            model_.codec_head = tensor;
+            impl_->model.codec_head = tensor;
         } else if (strstr(name, "talker.output_norm.weight")) {
-            model_.output_norm = tensor;
+            impl_->model.output_norm = tensor;
         } else if (strstr(name, "talker.blk.")) {
             int layer_idx = -1;
             sscanf(name, "talker.blk.%d.", &layer_idx);
             if (layer_idx >= 0 && layer_idx < cfg.n_layers) {
-                auto & layer = model_.layers[layer_idx];
+                auto & layer = impl_->model.layers[layer_idx];
                 if (strstr(name, "attn_norm.weight")) layer.attn_norm = tensor;
                 else if (strstr(name, "attn_q_norm.weight")) layer.attn_q_norm = tensor;
                 else if (strstr(name, "attn_k_norm.weight")) layer.attn_k_norm = tensor;
@@ -774,14 +775,14 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
                 else if (strstr(name, "ffn_down.weight")) layer.ffn_down = tensor;
             }
         } else if (strstr(name, "code_pred.small_to_mtp.weight")) {
-            model_.code_pred_small_to_mtp_weight = tensor;
+            impl_->model.code_pred_small_to_mtp_weight = tensor;
         } else if (strstr(name, "code_pred.small_to_mtp.bias")) {
-            model_.code_pred_small_to_mtp_bias = tensor;
+            impl_->model.code_pred_small_to_mtp_bias = tensor;
         } else if (strstr(name, "code_pred.blk.")) {
             int layer_idx = -1;
             sscanf(name, "code_pred.blk.%d.", &layer_idx);
             if (layer_idx >= 0 && layer_idx < cfg.code_pred_layers) {
-                auto & layer = model_.code_pred_layers[layer_idx];
+                auto & layer = impl_->model.code_pred_layers[layer_idx];
                 if (strstr(name, "attn_norm.weight")) layer.attn_norm = tensor;
                 else if (strstr(name, "attn_q_norm.weight")) layer.attn_q_norm = tensor;
                 else if (strstr(name, "attn_k_norm.weight")) layer.attn_k_norm = tensor;
@@ -798,16 +799,16 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
             int cb_idx = -1;
             sscanf(name, "code_pred.codec_embd.%d.weight", &cb_idx);
             if (cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
-                model_.code_pred_embd[cb_idx] = tensor;
+                impl_->model.code_pred_embd[cb_idx] = tensor;
             }
         } else if (strstr(name, "code_pred.lm_head.")) {
             int cb_idx = -1;
             sscanf(name, "code_pred.lm_head.%d.weight", &cb_idx);
             if (cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
-                model_.code_pred_head[cb_idx] = tensor;
+                impl_->model.code_pred_head[cb_idx] = tensor;
             }
         } else if (strstr(name, "code_pred.output_norm.weight")) {
-            model_.code_pred_output_norm = tensor;
+            impl_->model.code_pred_output_norm = tensor;
         }
     }
 
@@ -820,8 +821,8 @@ bool TTSTransformer::load_tensor_data(const std::string & path, struct gguf_cont
         return false;
     }
 
-    model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, backend);
-    if (!model_.buffer) {
+    impl_->model.buffer = ggml_backend_alloc_ctx_tensors(impl_->model.ctx, backend);
+    if (!impl_->model.buffer) {
         error_msg_ = "Failed to allocate tensor buffer";
         release_preferred_backend(backend);
         return false;
@@ -842,8 +843,8 @@ bool TTSTransformer::load_tensor_data(const std::string & path, struct gguf_cont
         const char * name = gguf_get_tensor_name(ctx, i);
         size_t offset = gguf_get_tensor_offset(ctx, i);
 
-        auto it = model_.tensors.find(name);
-        if (it == model_.tensors.end()) {
+        auto it = impl_->model.tensors.find(name);
+        if (it == impl_->model.tensors.end()) {
             continue;
         }
 

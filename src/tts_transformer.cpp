@@ -1,11 +1,18 @@
 #include "tts_transformer.h"
+#include "transformer/transformer_state_internal.h"
 
 namespace qwen3_tts {
 
-TTSTransformer::TTSTransformer() = default;
+TTSTransformer::TTSTransformer()
+    : impl_(std::make_unique<tts_transformer_private>()) {
+}
 
 TTSTransformer::~TTSTransformer() {
     unload_model();
+}
+
+const tts_transformer_config & TTSTransformer::get_config() const {
+    return impl_->model.config;
 }
 
 bool TTSTransformer::forward(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
