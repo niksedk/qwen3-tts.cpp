@@ -28,6 +28,7 @@ Current branch status on `refactor/architecture-split`:
 - Completed: code predictor runtime execution extracted into `src/transformer/transformer_runtime_code_pred.cpp`
 - Completed: outer autoregressive generation extracted into `src/transformer/transformer_generate.cpp`
 - Completed: transformer private model/state/runtime members moved out of `src/tts_transformer.h` into `src/transformer/transformer_state_internal.h`
+- Completed: pipeline runtime/logging/memory/resample helpers extracted into `src/pipeline/pipeline_runtime.cpp`
 - Confirmed after each completed step: local rebuild and test pass on the current Windows/CUDA workflow
 
 Current transformer split status:
@@ -40,6 +41,7 @@ Current transformer split status:
 Recommended next step from this point:
 
 - Continue Phase 2 by replacing the remaining private helper member declarations in `src/tts_transformer.h` with narrower internal helpers or a fuller pimpl boundary
+- Or continue the pipeline split by moving model discovery/lazy-load policy and synthesis orchestration out of `src/qwen3_tts.cpp`
 
 Guardrail for ongoing work:
 
