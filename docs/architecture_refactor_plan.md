@@ -33,6 +33,8 @@ Current branch status on `refactor/architecture-split`:
 - Completed: pipeline synthesis orchestration extracted into `src/pipeline/pipeline_synthesize.cpp`
 - Completed: WAV load/save helpers extracted into `src/common/audio_io.cpp`
 - Completed: speaker embedding parse/load/save helpers extracted into `src/common/speaker_embedding_io.cpp`
+- Completed: decoder-private model/state/layout structs moved into `src/decoder/decoder_internal.h`
+- Completed: decoder model loading, codebook normalization, and unload lifecycle extracted into `src/decoder/decoder_loader.cpp`
 - Confirmed after each completed step: local rebuild and test pass on the current Windows/CUDA workflow
 
 Current transformer split status:
@@ -44,7 +46,7 @@ Current transformer split status:
 
 Recommended next step from this point:
 
-- Start the decoder split by extracting model loading and codebook normalization out of `src/audio_tokenizer_decoder.cpp`
+- Continue the decoder split by extracting layer helper implementations out of `src/audio_tokenizer_decoder.cpp` into `src/decoder/decoder_layers.cpp`
 - Or continue Phase 2 by replacing the remaining private helper member declarations in `src/tts_transformer.h` with narrower internal helpers or a fuller pimpl boundary
 
 Guardrail for ongoing work:
@@ -69,13 +71,13 @@ Measured source file sizes in `src/`:
 
 | File | Lines | Notes |
 |---|---:|---|
-| `src/tts_transformer.cpp` | 3481 | Largest hotspot; mixes many unrelated concerns |
-| `src/qwen3_tts.cpp` | 954 | Pipeline orchestration mixed with I/O and utilities |
-| `src/audio_tokenizer_decoder.cpp` | 911 | Model loading, graph construction, layer helpers, runtime |
 | `src/audio_tokenizer_encoder.cpp` | 712 | DSP frontend plus GGML runtime in one file |
-| `src/tts_transformer.h` | 355 | Public header carries large amounts of private implementation detail |
-| `src/audio_tokenizer_decoder.h` | 232 | Public header exposes internal model/state/layout structs |
-| `src/qwen3_tts.h` | 173 | Public facade is reasonable, but utility functions and private details can still be separated better |
+| `src/audio_tokenizer_decoder.cpp` | 543 | Graph construction, layer helpers, and runtime remain coupled |
+| `src/tts_transformer.h` | 212 | Public header still carries many private helper declarations |
+| `src/qwen3_tts.h` | 173 | Public facade is stable after pipeline/common splits |
+| `src/audio_tokenizer_decoder.h` | 106 | Smaller, but still carries decoder-private helper declarations |
+| `src/tts_transformer.cpp` | 58 | Thin facade/free-helper translation unit after Phase 1 split |
+| `src/qwen3_tts.cpp` | 8 | Thin facade translation unit |
 
 ## Findings
 
@@ -138,12 +140,12 @@ The DSP frontend should be split from model/runtime code.
 
 `src/audio_tokenizer_decoder.cpp` currently mixes:
 
-- model loading
-- codebook normalization
 - graph cache management
 - layer helper implementations (`Snake`, RMSNorm, residual/upsample/decoder blocks)
 - full graph assembly
 - runtime execution
+
+The model-loading, normalization, and unload path now live in `src/decoder/decoder_loader.cpp`.
 
 The decoder has natural seams and should be split accordingly.
 
@@ -535,13 +537,13 @@ Before each major split:
 
 ## Immediate Next Refactor Task
 
-Start Phase 1 on `AudioTokenizerDecoder`.
+Continue Phase 1 on `AudioTokenizerDecoder`.
 
 First concrete step:
 
-1. Create `src/decoder/decoder_internal.h` for decoder-private model/state structs
-2. Move model loading, codebook normalization, and unload helpers into `src/decoder/decoder_loader.cpp`
-3. Update `CMakeLists.txt` to compile the new decoder source list
-4. Rebuild and run the standard Windows/CUDA regression pass
+1. Create `src/decoder/decoder_layers.cpp` for `apply_snake()`, `apply_rms_norm()`, and the upsample/residual/decoder block helpers
+2. Leave `build_graph*()` and `decode()` in `src/audio_tokenizer_decoder.cpp` for that step
+3. Rebuild and run the standard Windows/CUDA regression pass plus `test_decoder`
+4. Follow with graph-cache/graph-assembly extraction into `src/decoder/decoder_graph.cpp`
 
-This keeps the next pass mechanical while starting on the largest remaining `.cpp` hotspot after the transformer and pipeline work.
+This keeps the next pass mechanical while continuing to shrink the decoder without changing its public API.
