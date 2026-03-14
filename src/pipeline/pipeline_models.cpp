@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <filesystem>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -13,6 +14,7 @@
 #endif
 
 namespace qwen3_tts {
+namespace fs = std::filesystem;
 using pipeline_internal::configure_ggml_logging_once;
 using pipeline_internal::get_time_ms;
 using pipeline_internal::log_memory_usage;
@@ -31,28 +33,28 @@ bool Qwen3TTS::load_models(const std::string & model_dir, const std::string & mo
     std::string tts_model_path;
     std::string tokenizer_model_path;
 
-#ifdef _WIN32
-    std::string search_path = model_dir + "/*.gguf";
-    WIN32_FIND_DATAA find_data;
-    HANDLE h_find = FindFirstFileA(search_path.c_str(), &find_data);
-    if (h_find != INVALID_HANDLE_VALUE) {
-        do {
-            std::string filename = find_data.cFileName;
-            if (filename.find("tokenizer") != std::string::npos) {
-                tokenizer_model_path = model_dir + "/" + filename;
-            } else if (filename.find("qwen3-tts") != std::string::npos || filename.find("full") != std::string::npos) {
-                if (!model_name.empty()) {
-                    if (filename.find(model_name) != std::string::npos) {
-                        tts_model_path = model_dir + "/" + filename;
+    if (fs::exists(model_dir) && fs::is_directory(model_dir)) {
+        for (const auto & entry : fs::directory_iterator(model_dir)) {
+            if (!entry.is_regular_file()) continue;
+            std::string filename = entry.path().filename().string();
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+            if (ext == ".gguf") {
+                if (filename.find("tokenizer") != std::string::npos) {
+                    tokenizer_model_path = entry.path().string();
+                } else if (filename.find("qwen3-tts") != std::string::npos || filename.find("full") != std::string::npos) {
+                    if (!model_name.empty()) {
+                        if (filename.find(model_name) != std::string::npos) {
+                            tts_model_path = entry.path().string();
+                        }
+                    } else if (tts_model_path.empty() || filename.find("0.6b") != std::string::npos) {
+                        tts_model_path = entry.path().string();
                     }
-                } else if (tts_model_path.empty() || filename.find("0.6b") != std::string::npos) {
-                    tts_model_path = model_dir + "/" + filename;
                 }
             }
-        } while (FindNextFileA(h_find, &find_data));
-        FindClose(h_find);
+        }
     }
-#endif
 
     if (tts_model_path.empty()) {
         if (!model_name.empty()) {
