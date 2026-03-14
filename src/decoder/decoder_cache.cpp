@@ -5,8 +5,8 @@
 
 namespace qwen3_tts {
 
-void AudioTokenizerDecoder::release_cached_decode_graph() {
-    auto & state = impl_->state;
+void decoder_internal::ops::release_cached_decode_graph(AudioTokenizerDecoder & self) {
+    auto & state = self.impl_->state;
 
     state.decode_graph = nullptr;
     state.decode_positions_tensor = nullptr;
@@ -21,20 +21,20 @@ void AudioTokenizerDecoder::release_cached_decode_graph() {
     }
 }
 
-bool AudioTokenizerDecoder::ensure_cached_decode_graph(int32_t n_frames) {
-    auto & state = impl_->state;
-    auto & error_msg = impl_->error_msg;
+bool decoder_internal::ops::ensure_cached_decode_graph(AudioTokenizerDecoder & self, int32_t n_frames) {
+    auto & state = self.impl_->state;
+    auto & error_msg = self.impl_->error_msg;
 
     if (state.decode_graph && state.decode_graph_n_frames == n_frames) {
         return true;
     }
 
-    release_cached_decode_graph();
+    release_cached_decode_graph(self);
 
-    state.decode_graph = build_graph_impl(n_frames, &state.decode_graph_ctx);
+    state.decode_graph = build_graph_impl(self, n_frames, &state.decode_graph_ctx);
     if (!state.decode_graph || !state.decode_graph_ctx) {
         error_msg = "Failed to build cached decoder graph";
-        release_cached_decode_graph();
+        release_cached_decode_graph(self);
         return false;
     }
 
@@ -44,7 +44,7 @@ bool AudioTokenizerDecoder::ensure_cached_decode_graph(int32_t n_frames) {
         state.decode_code_tensors[cb] = ggml_graph_get_tensor(state.decode_graph, name);
         if (!state.decode_code_tensors[cb]) {
             error_msg = "Failed to find cached decoder input tensor for codebook " + std::to_string(cb);
-            release_cached_decode_graph();
+            release_cached_decode_graph(self);
             return false;
         }
     }
@@ -53,7 +53,7 @@ bool AudioTokenizerDecoder::ensure_cached_decode_graph(int32_t n_frames) {
     state.decode_audio_tensor = ggml_graph_get_tensor(state.decode_graph, "audio");
     if (!state.decode_audio_tensor) {
         error_msg = "Failed to find cached decoder output tensor";
-        release_cached_decode_graph();
+        release_cached_decode_graph(self);
         return false;
     }
 

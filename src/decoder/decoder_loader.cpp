@@ -31,7 +31,7 @@ void AudioTokenizerDecoder::unload_model() {
     auto & codebook_input_bufs = impl_->codebook_input_bufs;
     auto & positions_buf = impl_->positions_buf;
 
-    release_cached_decode_graph();
+    decoder_internal::ops::release_cached_decode_graph(*this);
     free_audio_decoder_model(model);
 
     if (state.sched) {
@@ -53,8 +53,8 @@ void AudioTokenizerDecoder::unload_model() {
     positions_buf.clear();
 }
 
-void AudioTokenizerDecoder::normalize_codebooks() {
-    auto & model = impl_->model;
+void decoder_internal::ops::normalize_codebooks(AudioTokenizerDecoder & self) {
+    auto & model = self.impl_->model;
     const float epsilon = 1e-5f;
 
     auto normalize_codebook = [epsilon](struct ggml_tensor * codebook, struct ggml_tensor * usage, const char *) {
@@ -317,7 +317,7 @@ bool AudioTokenizerDecoder::load_model(const std::string & model_path) {
         model.dec_blocks[i].res[2].dilation = 9;
     }
 
-    normalize_codebooks();
+    decoder_internal::ops::normalize_codebooks(*this);
     auto upload_if_present = [](struct ggml_tensor * t) {
         if (t && t->data) {
             ggml_backend_tensor_set(t, t->data, 0, ggml_nbytes(t));

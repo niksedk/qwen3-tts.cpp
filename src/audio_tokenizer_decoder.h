@@ -11,11 +11,10 @@ struct ggml_cgraph;
 
 namespace qwen3_tts {
 
-struct pre_tfm_layer;
-struct upsample_block;
-struct residual_block;
-struct decoder_block;
 struct audio_decoder_private;
+namespace decoder_internal {
+struct ops;
+}
 
 // Audio tokenizer decoder (vocoder) configuration
 struct audio_decoder_config {
@@ -59,50 +58,7 @@ public:
     const std::string & get_error() const;
     
 private:
-    // Build computation graph for decoding
-    struct ggml_cgraph * build_graph(int32_t n_frames);
-    struct ggml_cgraph * build_graph_impl(int32_t n_frames, struct ggml_context ** graph_ctx_out);
-    void release_cached_decode_graph();
-    bool ensure_cached_decode_graph(int32_t n_frames);
-    
-    // Apply Snake activation: x + (1/alpha) * sin^2(alpha * x)
-    struct ggml_tensor * apply_snake(struct ggml_context * ctx,
-                                      struct ggml_tensor * x,
-                                      struct ggml_tensor * alpha,
-                                      struct ggml_tensor * beta);
-    
-    // Apply RMSNorm
-    struct ggml_tensor * apply_rms_norm(struct ggml_context * ctx,
-                                         struct ggml_tensor * x,
-                                         struct ggml_tensor * w,
-                                         float eps);
-    
-    // Apply pre-transformer layer
-    struct ggml_tensor * apply_pre_tfm_layer(struct ggml_context * ctx,
-                                              struct ggml_tensor * x,
-                                              const pre_tfm_layer & layer,
-                                              int32_t n_frames,
-                                              struct ggml_tensor * positions);
-    
-    // Apply upsample block (ConvNeXt-style)
-    struct ggml_tensor * apply_upsample_block(struct ggml_context * ctx,
-                                               struct ggml_tensor * x,
-                                               const upsample_block & block,
-                                               int block_idx);
-    
-    // Apply residual block
-    struct ggml_tensor * apply_residual_block(struct ggml_context * ctx,
-                                               struct ggml_tensor * x,
-                                               const residual_block & block);
-    
-    // Apply decoder block (Snake + ConvTranspose + Residuals)
-    struct ggml_tensor * apply_decoder_block(struct ggml_context * ctx,
-                                               struct ggml_tensor * x,
-                                               const decoder_block & block,
-                                               int upsample_rate,
-                                               int block_idx);
-    
-    void normalize_codebooks();
+    friend struct decoder_internal::ops;
 
     std::unique_ptr<audio_decoder_private> impl_;
 };

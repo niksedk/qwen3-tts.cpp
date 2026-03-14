@@ -5,13 +5,15 @@
 
 namespace qwen3_tts {
 
-struct ggml_cgraph * AudioTokenizerDecoder::build_graph(int32_t n_frames) {
-    return build_graph_impl(n_frames, nullptr);
+struct ggml_cgraph * decoder_internal::ops::build_graph(AudioTokenizerDecoder & self, int32_t n_frames) {
+    return build_graph_impl(self, n_frames, nullptr);
 }
 
-struct ggml_cgraph * AudioTokenizerDecoder::build_graph_impl(int32_t n_frames, struct ggml_context ** graph_ctx_out) {
-    auto & model = impl_->model;
-    auto & state = impl_->state;
+struct ggml_cgraph * decoder_internal::ops::build_graph_impl(AudioTokenizerDecoder & self,
+                                                             int32_t n_frames,
+                                                             struct ggml_context ** graph_ctx_out) {
+    auto & model = self.impl_->model;
+    auto & state = self.impl_->state;
     const auto & cfg = model.config;
 
     struct ggml_init_params params = {
@@ -120,7 +122,7 @@ struct ggml_cgraph * AudioTokenizerDecoder::build_graph_impl(int32_t n_frames, s
     ggml_set_input(positions);
 
     for (int i = 0; i < cfg.n_pre_tfm_layers; ++i) {
-        cur = apply_pre_tfm_layer(ctx0, cur, model.pre_tfm_layers[i], n_frames, positions);
+        cur = apply_pre_tfm_layer(ctx0, self, cur, model.pre_tfm_layers[i], n_frames, positions);
     }
 
     if (model.pre_tfm_norm_w) {
@@ -156,7 +158,7 @@ struct ggml_cgraph * AudioTokenizerDecoder::build_graph_impl(int32_t n_frames, s
 
     int upsample_rates[4] = {8, 5, 4, 3};
     for (int i = 0; i < 4; ++i) {
-        cur = apply_decoder_block(ctx0, cur, model.dec_blocks[i], upsample_rates[i], i);
+        cur = apply_decoder_block(ctx0, self, cur, model.dec_blocks[i], upsample_rates[i], i);
         char name[32];
         snprintf(name, sizeof(name), "dec%d_output", i + 1);
         ggml_set_name(cur, name);

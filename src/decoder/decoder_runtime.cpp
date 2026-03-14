@@ -18,7 +18,7 @@ bool AudioTokenizerDecoder::decode(const int32_t * codes, int32_t n_frames,
 
     const auto & cfg = model.config;
 
-    if (!ensure_cached_decode_graph(n_frames)) {
+    if (!decoder_internal::ops::ensure_cached_decode_graph(*this, n_frames)) {
         return false;
     }
 

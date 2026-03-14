@@ -5,7 +5,18 @@
 #include <vector>
 
 namespace qwen3_tts {
+class Qwen3TTS;
+struct tts_params;
+struct tts_result;
 namespace pipeline_internal {
+
+struct ops {
+    static tts_result synthesize_internal(Qwen3TTS & self,
+                                          const std::string & text,
+                                          const float * speaker_embedding,
+                                          const tts_params & params,
+                                          tts_result & result);
+};
 
 struct process_memory_snapshot {
     uint64_t rss_bytes = 0;

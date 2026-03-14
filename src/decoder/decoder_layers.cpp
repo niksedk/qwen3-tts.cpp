@@ -5,10 +5,10 @@
 
 namespace qwen3_tts {
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_snake(struct ggml_context * ctx,
-                                                         struct ggml_tensor * x,
-                                                         struct ggml_tensor * alpha,
-                                                         struct ggml_tensor * beta) {
+struct ggml_tensor * decoder_internal::ops::apply_snake(struct ggml_context * ctx,
+                                                        struct ggml_tensor * x,
+                                                        struct ggml_tensor * alpha,
+                                                        struct ggml_tensor * beta) {
     int64_t seq_len = x->ne[0];
     int64_t channels = x->ne[1];
     int64_t batch = x->ne[2];
@@ -34,20 +34,21 @@ struct ggml_tensor * AudioTokenizerDecoder::apply_snake(struct ggml_context * ct
     return ggml_add(ctx, x, scaled_sin);
 }
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_rms_norm(struct ggml_context * ctx,
-                                                            struct ggml_tensor * x,
-                                                            struct ggml_tensor * w,
-                                                            float eps) {
+struct ggml_tensor * decoder_internal::ops::apply_rms_norm(struct ggml_context * ctx,
+                                                           struct ggml_tensor * x,
+                                                           struct ggml_tensor * w,
+                                                           float eps) {
     struct ggml_tensor * normed = ggml_rms_norm(ctx, x, eps);
     return ggml_mul(ctx, normed, w);
 }
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_pre_tfm_layer(struct ggml_context * ctx,
-                                                                 struct ggml_tensor * x,
-                                                                 const pre_tfm_layer & layer,
-                                                                 int32_t n_frames,
-                                                                 struct ggml_tensor * positions) {
-    const auto & cfg = impl_->model.config;
+struct ggml_tensor * decoder_internal::ops::apply_pre_tfm_layer(struct ggml_context * ctx,
+                                                                AudioTokenizerDecoder & self,
+                                                                struct ggml_tensor * x,
+                                                                const pre_tfm_layer & layer,
+                                                                int32_t n_frames,
+                                                                struct ggml_tensor * positions) {
+    const auto & cfg = self.impl_->model.config;
     const int n_heads = cfg.n_heads;
     const int qkv_dim = cfg.latent_dim;
     const int head_dim = qkv_dim / n_heads;
@@ -119,10 +120,10 @@ struct ggml_tensor * AudioTokenizerDecoder::apply_pre_tfm_layer(struct ggml_cont
     return ggml_add(ctx, residual, ffn_out);
 }
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_upsample_block(struct ggml_context * ctx,
-                                                                   struct ggml_tensor * x,
-                                                                   const upsample_block & block,
-                                                                   int block_idx) {
+struct ggml_tensor * decoder_internal::ops::apply_upsample_block(struct ggml_context * ctx,
+                                                                 struct ggml_tensor * x,
+                                                                 const upsample_block & block,
+                                                                 int block_idx) {
     (void) block_idx;
     int64_t seq_len = x->ne[0];
     int64_t channels = x->ne[1];
@@ -180,9 +181,9 @@ struct ggml_tensor * AudioTokenizerDecoder::apply_upsample_block(struct ggml_con
     return ggml_add(ctx, residual, x);
 }
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_residual_block(struct ggml_context * ctx,
-                                                                  struct ggml_tensor * x,
-                                                                  const residual_block & block) {
+struct ggml_tensor * decoder_internal::ops::apply_residual_block(struct ggml_context * ctx,
+                                                                 struct ggml_tensor * x,
+                                                                 const residual_block & block) {
     struct ggml_tensor * residual = x;
 
     if (block.act1_alpha) {
@@ -210,11 +211,13 @@ struct ggml_tensor * AudioTokenizerDecoder::apply_residual_block(struct ggml_con
     return ggml_add(ctx, residual, x);
 }
 
-struct ggml_tensor * AudioTokenizerDecoder::apply_decoder_block(struct ggml_context * ctx,
-                                                                  struct ggml_tensor * x,
-                                                                  const decoder_block & block,
-                                                                  int upsample_rate,
-                                                                  int block_idx) {
+struct ggml_tensor * decoder_internal::ops::apply_decoder_block(struct ggml_context * ctx,
+                                                                AudioTokenizerDecoder & self,
+                                                                struct ggml_tensor * x,
+                                                                const decoder_block & block,
+                                                                int upsample_rate,
+                                                                int block_idx) {
+    (void) self;
     (void) block_idx;
     if (block.snake_alpha && block.snake_beta) {
         x = apply_snake(ctx, x, block.snake_alpha, block.snake_beta);

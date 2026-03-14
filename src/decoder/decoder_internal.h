@@ -11,6 +11,8 @@
 
 namespace qwen3_tts {
 
+class AudioTokenizerDecoder;
+
 inline constexpr int QWEN3_TTS_DEC_MAX_NODES = 32768;
 
 // Pre-transformer layer weights
@@ -120,6 +122,47 @@ struct audio_decoder_state {
     struct ggml_tensor * decode_audio_tensor = nullptr;
     int32_t decode_graph_n_frames = 0;
 };
+
+namespace decoder_internal {
+
+struct ops {
+    static struct ggml_cgraph * build_graph(AudioTokenizerDecoder & self, int32_t n_frames);
+    static struct ggml_cgraph * build_graph_impl(AudioTokenizerDecoder & self,
+                                                 int32_t n_frames,
+                                                 struct ggml_context ** graph_ctx_out);
+    static void release_cached_decode_graph(AudioTokenizerDecoder & self);
+    static bool ensure_cached_decode_graph(AudioTokenizerDecoder & self, int32_t n_frames);
+    static struct ggml_tensor * apply_snake(struct ggml_context * ctx,
+                                            struct ggml_tensor * x,
+                                            struct ggml_tensor * alpha,
+                                            struct ggml_tensor * beta);
+    static struct ggml_tensor * apply_rms_norm(struct ggml_context * ctx,
+                                               struct ggml_tensor * x,
+                                               struct ggml_tensor * w,
+                                               float eps);
+    static struct ggml_tensor * apply_pre_tfm_layer(struct ggml_context * ctx,
+                                                    AudioTokenizerDecoder & self,
+                                                    struct ggml_tensor * x,
+                                                    const pre_tfm_layer & layer,
+                                                    int32_t n_frames,
+                                                    struct ggml_tensor * positions);
+    static struct ggml_tensor * apply_upsample_block(struct ggml_context * ctx,
+                                                     struct ggml_tensor * x,
+                                                     const upsample_block & block,
+                                                     int block_idx);
+    static struct ggml_tensor * apply_residual_block(struct ggml_context * ctx,
+                                                     struct ggml_tensor * x,
+                                                     const residual_block & block);
+    static struct ggml_tensor * apply_decoder_block(struct ggml_context * ctx,
+                                                    AudioTokenizerDecoder & self,
+                                                    struct ggml_tensor * x,
+                                                    const decoder_block & block,
+                                                    int upsample_rate,
+                                                    int block_idx);
+    static void normalize_codebooks(AudioTokenizerDecoder & self);
+};
+
+} // namespace decoder_internal
 
 void free_audio_decoder_model(audio_decoder_model & model);
 

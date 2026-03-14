@@ -50,6 +50,9 @@ Current branch status on `refactor/architecture-split`:
 - Completed: encoder runtime execution extracted into `src/encoder/encoder_runtime.cpp`
 - Completed: encoder private model/state storage moved behind `src/encoder/encoder_state_internal.h`
 - Completed: public encoder header no longer exposes GGML-heavy private storage details
+- Completed: Phase 1 source-file extraction is effectively complete across transformer, pipeline, encoder, and decoder
+- Completed: public decoder header no longer exposes graph/cache/layer helper declarations
+- Completed: `Qwen3TTS` public header no longer declares `synthesize_internal()`
 - Confirmed after each completed step: local rebuild and test pass on the current Windows/CUDA workflow
 
 Current transformer split status:
@@ -62,8 +65,8 @@ Current transformer split status:
 
 Recommended next step from this point:
 
-- Keep the encoder surface stable and limit follow-up work there to small boundary polish if it falls out naturally
-- Shift the next structural pass to whichever remaining subsystem still has the largest maintenance burden
+- Keep future refactor work focused on small internal-boundary polish rather than more file splitting
+- Update documentation and only continue with code movement when a clear maintenance benefit exists
 
 Guardrail for ongoing work:
 
@@ -83,20 +86,21 @@ At a coarse level, this is a good architecture. The main maintainability problem
 
 ## Current File Hotspots
 
-Measured source file sizes in `src/`:
+Measured source file sizes in `src/` after the extraction work:
 
 | File | Lines | Notes |
 |---|---:|---|
-| `src/audio_tokenizer_encoder.cpp` | 712 | DSP frontend plus GGML runtime in one file |
-| `src/tts_transformer.h` | 172 | Public header is materially smaller after helper-declaration cleanup |
-| `src/decoder/decoder_layers.cpp` | 192 | Decoder layer helper implementations are now isolated |
-| `src/qwen3_tts.h` | 173 | Public facade is stable after pipeline/common splits |
-| `src/decoder/decoder_graph.cpp` | 145 | Decoder graph assembly is now isolated |
-| `src/decoder/decoder_loader.cpp` | 329 | Decoder model loading and backend setup are isolated |
-| `src/audio_tokenizer_decoder.h` | 101 | Public decoder header now uses a private impl boundary |
-| `src/decoder/decoder_runtime.cpp` | 67 | Decoder runtime execution is now isolated |
-| `src/decoder/decoder_cache.cpp` | 52 | Decoder cached graph lifecycle is now isolated |
+| `src/transformer/transformer_runtime_code_pred.cpp` | 494 | Largest remaining implementation unit; complex runtime path but already responsibility-focused |
+| `src/transformer/transformer_embeddings.cpp` | 356 | Embedding/prefill helpers remain concentrated but coherent |
+| `src/transformer/transformer_generate.cpp` | 343 | Generation loop and sampling remain together intentionally |
+| `src/transformer/transformer_loader_tensors.cpp` | 341 | Tensor materialization/upload is now isolated from loader orchestration |
+| `src/pipeline/pipeline_synthesize.cpp` | 339 | Pipeline orchestration remains the largest non-transformer unit |
+| `src/decoder/decoder_loader.cpp` | 329 | Decoder loader lifecycle remains focused and isolated |
+| `src/qwen3_tts.h` | 173 | Public facade is now limited to public API and private state only |
+| `src/tts_transformer.h` | 172 | Public transformer header is materially smaller after helper-declaration cleanup |
+| `src/transformer/transformer_loader_metadata.cpp` | 289 | GGUF metadata parsing now isolated |
 | `src/tts_transformer.cpp` | 58 | Thin facade/free-helper translation unit after Phase 1 split |
+| `src/audio_tokenizer_encoder.cpp` | 41 | Thin facade translation unit after encoder split |
 | `src/qwen3_tts.cpp` | 8 | Thin facade translation unit |
 
 ## Findings
@@ -121,7 +125,7 @@ Historically, the transformer implementation owned all of the following in one p
 - Sampling helpers
 - Outer autoregressive generation loop
 
-This is no longer concentrated in one translation unit. The remaining transformer work is mainly boundary cleanup, while the encoder file is now the largest unsplit implementation hotspot.
+This is no longer concentrated in one translation unit. The remaining transformer work is mainly boundary cleanup rather than additional major file extraction.
 
 ### 2. The public transformer header is carrying implementation-only data
 
@@ -170,7 +174,18 @@ The public header no longer exposes decoder-private model/state storage.
 
 The decoder and encoder are no longer the primary refactor hotspots; the remaining work is smaller boundary cleanup.
 
-### 6. The current CMake target split is good enough
+### 6. Remaining work is now mostly optional internal-boundary polish
+
+The main public-header leakage called out during Phase 2 has been reduced.
+
+What remains is smaller and mostly internal:
+
+- `src/decoder/decoder_internal.h` now carries both model/state layout and the decoder helper ops boundary
+- `src/transformer/transformer_internal.h` still aggregates a broad helper surface in one internal header
+
+These are valid cleanup opportunities, but they are no longer high-priority structural problems.
+
+### 7. The current CMake target split is good enough
 
 The existing top-level target structure is reasonable:
 
@@ -182,7 +197,7 @@ The existing top-level target structure is reasonable:
 
 The refactor should not begin by changing target boundaries. The first step should be splitting source files inside the existing targets. That keeps build/test risk lower.
 
-### 7. Oversplitting would also be a mistake
+### 8. Oversplitting would also be a mistake
 
 The right goal is not "tiny files". The right goal is coherent files with one main concern.
 
@@ -558,13 +573,12 @@ Before each major split:
 
 ## Immediate Next Refactor Task
 
-Continue Phase 1 on `AudioTokenizerDecoder`.
+There is no urgent Phase 1 or Phase 2 structural extraction left.
 
-First concrete step:
+If refactor work continues, the next concrete step should be one of:
 
-1. Create `src/decoder/decoder_layers.cpp` for `apply_snake()`, `apply_rms_norm()`, and the upsample/residual/decoder block helpers
-2. Leave `build_graph*()` and `decode()` in `src/audio_tokenizer_decoder.cpp` for that step
-3. Rebuild and run the standard Windows/CUDA regression pass plus `test_decoder`
-4. Follow with graph-cache/graph-assembly extraction into `src/decoder/decoder_graph.cpp`
+1. Split oversized internal helper headers by concern if that materially improves readability
+2. Tighten any remaining internal naming/boundary inconsistencies discovered during routine feature work
+3. Otherwise stop refactoring here and preserve the current structure until a new maintenance pain point appears
 
-This keeps the next pass mechanical while continuing to shrink the decoder without changing its public API.
+This avoids churning the codebase after the main architectural goals have already been met.

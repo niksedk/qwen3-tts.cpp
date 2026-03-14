@@ -9,6 +9,7 @@ using pipeline_internal::format_bytes;
 using pipeline_internal::get_process_memory_snapshot;
 using pipeline_internal::get_time_ms;
 using pipeline_internal::log_memory_usage;
+using pipeline_internal::ops;
 using pipeline_internal::process_memory_snapshot;
 using pipeline_internal::resample_linear;
 
@@ -31,7 +32,7 @@ tts_result Qwen3TTS::synthesize(const std::string & text,
             fprintf(stderr, "Using named speaker: %s (%zu floats)\n",
                     params.speaker.c_str(), speaker_embedding.size());
         }
-        return synthesize_internal(text, speaker_embedding.data(), params, result);
+        return ops::synthesize_internal(*this, text, speaker_embedding.data(), params, result);
     }
 
     if (transformer_.get_config().tts_model_type == "custom_voice") {
@@ -39,7 +40,7 @@ tts_result Qwen3TTS::synthesize(const std::string & text,
         return result;
     }
 
-    return synthesize_internal(text, nullptr, params, result);
+    return ops::synthesize_internal(*this, text, nullptr, params, result);
 }
 
 tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
@@ -116,7 +117,7 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
         fprintf(stderr, "Speaker embedding extracted: %zu floats\n", speaker_embedding.size());
     }
 
-    return synthesize_internal(text, speaker_embedding.data(), params, result);
+    return ops::synthesize_internal(*this, text, speaker_embedding.data(), params, result);
 }
 
 tts_result Qwen3TTS::synthesize_with_speaker_embedding(const std::string & text,
@@ -144,7 +145,7 @@ tts_result Qwen3TTS::synthesize_with_speaker_embedding(const std::string & text,
     }
 
     result.t_encode_ms = 0;
-    return synthesize_internal(text, speaker_embedding.data(), params, result);
+    return ops::synthesize_internal(*this, text, speaker_embedding.data(), params, result);
 }
 
 bool Qwen3TTS::extract_speaker_embedding(const std::string & reference_audio,
@@ -208,10 +209,11 @@ bool Qwen3TTS::extract_speaker_embedding(const std::string & reference_audio,
     return true;
 }
 
-tts_result Qwen3TTS::synthesize_internal(const std::string & text,
-                                         const float * speaker_embedding,
-                                         const tts_params & params,
-                                         tts_result & result) {
+tts_result pipeline_internal::ops::synthesize_internal(Qwen3TTS & self,
+                                                       const std::string & text,
+                                                       const float * speaker_embedding,
+                                                       const tts_params & params,
+                                                       tts_result & result) {
     int64_t t_total_start = get_time_ms();
     auto sample_memory = [&](const char * stage) {
         process_memory_snapshot mem;
@@ -240,10 +242,10 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
     sample_memory("synth/start");
 
     int64_t t_tokenize_start = get_time_ms();
-    std::vector<int32_t> text_tokens = tokenizer_.encode_for_tts(text);
+    std::vector<int32_t> text_tokens = self.tokenizer_.encode_for_tts(text);
     std::vector<int32_t> instruct_tokens;
     if (!params.instruction.empty()) {
-        instruct_tokens = tokenizer_.encode_instruct(params.instruction);
+        instruct_tokens = self.tokenizer_.encode_instruct(params.instruction);
     }
     result.t_tokenize_ms = get_time_ms() - t_tokenize_start;
     sample_memory("synth/after-tokenize");
@@ -271,35 +273,35 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
     }
 
     int64_t t_generate_start = get_time_ms();
-    if (!transformer_loaded_) {
+    if (!self.transformer_loaded_) {
         int64_t t_reload_start = get_time_ms();
-        if (!transformer_.load_model(tts_model_path_)) {
-            result.error_msg = "Failed to reload TTS transformer: " + transformer_.get_error();
+        if (!self.transformer_.load_model(self.tts_model_path_)) {
+            result.error_msg = "Failed to reload TTS transformer: " + self.transformer_.get_error();
             return result;
         }
-        transformer_loaded_ = true;
+        self.transformer_loaded_ = true;
         if (params.print_timing) {
             fprintf(stderr, "  Transformer reloaded in %lld ms\n",
                     (long long) (get_time_ms() - t_reload_start));
             sample_memory("synth/after-transformer-reload");
         }
     }
-    transformer_.clear_kv_cache();
+    self.transformer_.clear_kv_cache();
 
     std::vector<int32_t> speech_codes;
-    if (!transformer_.generate(text_tokens.data(), (int32_t) text_tokens.size(),
-                               speaker_embedding, params.max_audio_tokens, speech_codes,
-                               params.language_id, params.repetition_penalty,
-                               params.temperature, params.top_k,
-                               instruct_tokens.empty() ? nullptr : instruct_tokens.data(),
-                               (int32_t) instruct_tokens.size())) {
-        result.error_msg = "Failed to generate speech codes: " + transformer_.get_error();
+    if (!self.transformer_.generate(text_tokens.data(), (int32_t) text_tokens.size(),
+                                    speaker_embedding, params.max_audio_tokens, speech_codes,
+                                    params.language_id, params.repetition_penalty,
+                                    params.temperature, params.top_k,
+                                    instruct_tokens.empty() ? nullptr : instruct_tokens.data(),
+                                    (int32_t) instruct_tokens.size())) {
+        result.error_msg = "Failed to generate speech codes: " + self.transformer_.get_error();
         return result;
     }
     result.t_generate_ms = get_time_ms() - t_generate_start;
     sample_memory("synth/after-generate");
 
-    int n_codebooks = transformer_.get_config().n_codebooks;
+    int n_codebooks = self.transformer_.get_config().n_codebooks;
     int n_frames = (int) speech_codes.size() / n_codebooks;
 
     if (params.print_progress) {
@@ -311,24 +313,24 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
         return result;
     }
 
-    if (low_mem_mode_) {
-        transformer_.unload_model();
-        transformer_loaded_ = false;
+    if (self.low_mem_mode_) {
+        self.transformer_.unload_model();
+        self.transformer_loaded_ = false;
         sample_memory("synth/after-transformer-unload");
     }
 
     int64_t t_decode_start = get_time_ms();
-    if (!decoder_loaded_) {
+    if (!self.decoder_loaded_) {
         int64_t t_decoder_load_start = get_time_ms();
-        if (decoder_model_path_.empty()) {
+        if (self.decoder_model_path_.empty()) {
             result.error_msg = "Internal error: missing vocoder model path";
             return result;
         }
-        if (!audio_decoder_.load_model(decoder_model_path_)) {
-            result.error_msg = "Failed to load vocoder: " + audio_decoder_.get_error();
+        if (!self.audio_decoder_.load_model(self.decoder_model_path_)) {
+            result.error_msg = "Failed to load vocoder: " + self.audio_decoder_.get_error();
             return result;
         }
-        decoder_loaded_ = true;
+        self.decoder_loaded_ = true;
         if (params.print_timing) {
             fprintf(stderr, "  Vocoder lazy-loaded in %lld ms\n",
                     (long long) (get_time_ms() - t_decoder_load_start));
@@ -336,20 +338,20 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
         }
     }
 
-    if (!audio_decoder_.decode(speech_codes.data(), n_frames, result.audio)) {
-        result.error_msg = "Failed to decode speech codes: " + audio_decoder_.get_error();
+    if (!self.audio_decoder_.decode(speech_codes.data(), n_frames, result.audio)) {
+        result.error_msg = "Failed to decode speech codes: " + self.audio_decoder_.get_error();
         return result;
     }
     result.t_decode_ms = get_time_ms() - t_decode_start;
     sample_memory("synth/after-decode");
 
-    if (low_mem_mode_) {
-        audio_decoder_.unload_model();
-        decoder_loaded_ = false;
+    if (self.low_mem_mode_) {
+        self.audio_decoder_.unload_model();
+        self.decoder_loaded_ = false;
         sample_memory("synth/after-vocoder-unload");
     }
 
-    result.sample_rate = audio_decoder_.get_config().sample_rate;
+    result.sample_rate = self.audio_decoder_.get_config().sample_rate;
     result.success = true;
     result.t_total_ms = get_time_ms() - t_total_start;
     sample_memory("synth/end");
