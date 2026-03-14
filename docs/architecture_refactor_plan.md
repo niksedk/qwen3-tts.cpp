@@ -29,6 +29,8 @@ Current branch status on `refactor/architecture-split`:
 - Completed: outer autoregressive generation extracted into `src/transformer/transformer_generate.cpp`
 - Completed: transformer private model/state/runtime members moved out of `src/tts_transformer.h` into `src/transformer/transformer_state_internal.h`
 - Completed: public transformer header no longer carries private helper member declarations; those now route through `transformer_internal::ops` in `src/transformer/transformer_internal.h`
+- Completed: transformer GGUF metadata parsing extracted into `src/transformer/transformer_loader_metadata.cpp`
+- Completed: transformer tensor creation and data upload extracted into `src/transformer/transformer_loader_tensors.cpp`
 - Completed: pipeline runtime/logging/memory/resample helpers extracted into `src/pipeline/pipeline_runtime.cpp`
 - Completed: pipeline model discovery, lazy-load policy, and capability helpers extracted into `src/pipeline/pipeline_models.cpp`
 - Completed: pipeline synthesis orchestration extracted into `src/pipeline/pipeline_synthesize.cpp`
@@ -53,9 +55,10 @@ Current branch status on `refactor/architecture-split`:
 Current transformer split status:
 
 - Still in `src/tts_transformer.cpp`: constructor/destructor facade, legacy forward wrappers, and free helpers
+- Still in `src/transformer/transformer_loader.cpp`: load/unload orchestration and CoreML loader hookup
 - Now moved out of `src/tts_transformer.cpp`: debug trace helpers, model load/unload path, GGUF config parsing, tensor creation, tensor data loading, CoreML loader hookup, KV-cache lifecycle, scheduler reserve warmup, embedding lookup helpers, named speaker lookup, prefill embedding construction, talker graph builders, code predictor graph builders, talker runtime execution, code predictor runtime execution, outer autoregressive generation
 - Now moved out of `src/tts_transformer.h`: `transformer_layer`, `tts_transformer_model`, `tts_transformer_state`, `tts_kv_cache`, timing state, CoreML/runtime members, GGML/GGUF-heavy private storage details, and the former private graph/build/runtime helper declarations
-- Remaining transformer cleanup is mostly optional internal boundary polish rather than a blocking structural split
+- Remaining transformer cleanup is now mostly optional internal boundary polish rather than a blocking structural split
 
 Recommended next step from this point:
 
