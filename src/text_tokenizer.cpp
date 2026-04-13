@@ -1,5 +1,5 @@
 #include "text_tokenizer.h"
-#include "unicode.h"
+#include "tokenizer_unicode.h"
 
 #include <algorithm>
 #include <cstring>
