@@ -89,9 +89,9 @@ jobs:
         shell: pwsh
         run: |
           $ver = if ($env:GITHUB_REF -like "refs/tags/*") {
-            $env:GITHUB_REF -replace "refs/tags/", ""
+            ($env:GITHUB_REF -replace "refs/tags/", "").Trim()
           } elseif ("${{ inputs.version }}") {
-            "${{ inputs.version }}"
+            "${{ inputs.version }}".Trim()
           } else {
             "dev-$(git rev-parse --short HEAD)"
           }
@@ -117,12 +117,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version || github.ref_name }}
-          name: ${{ inputs.version || github.ref_name }}
+          tag_name: ${{ steps.name.outputs.version }}
+          name: ${{ steps.name.outputs.version }}
           files: ${{ steps.name.outputs.zip }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.name.outputs.version, '-') }}
 
   linux-vulkan:
     name: Linux x64 (Vulkan + CPU fallback)
@@ -188,13 +188,16 @@ jobs:
           else
             ver="dev-$(git rev-parse --short HEAD)"
           fi
-          archive="qwen3-tts-server-$ver-linux-vulkan-x64.tar.gz"
+          ver="$(printf '%s' "$ver" | tr -d '[:space:]')"
+          archive="qwen3-tts-server-$ver-linux-vulkan-x64.zip"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Archive
         run: |
-          tar -C dist -czf "${{ steps.name.outputs.archive }}" qwen3-tts-server-linux-vulkan-x64
+          # Flat zip (files at root, matching the Windows zip layout) with Unix perms preserved.
+          ( cd dist/qwen3-tts-server-linux-vulkan-x64 && \
+            zip -r "$GITHUB_WORKSPACE/${{ steps.name.outputs.archive }}" . )
           ls -la "${{ steps.name.outputs.archive }}"
 
       - name: Upload artifact
@@ -208,12 +211,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version || github.ref_name }}
-          name: ${{ inputs.version || github.ref_name }}
+          tag_name: ${{ steps.name.outputs.version }}
+          name: ${{ steps.name.outputs.version }}
           files: ${{ steps.name.outputs.archive }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.name.outputs.version, '-') }}
 
   macos-metal:
     name: macOS ARM64 (Metal)
@@ -273,13 +276,16 @@ jobs:
           else
             ver="dev-$(git rev-parse --short HEAD)"
           fi
-          archive="qwen3-tts-server-$ver-macos-metal-arm64.tar.gz"
+          ver="$(printf '%s' "$ver" | tr -d '[:space:]')"
+          archive="qwen3-tts-server-$ver-macos-metal-arm64.zip"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Archive
         run: |
-          tar -C dist -czf "${{ steps.name.outputs.archive }}" qwen3-tts-server-macos-metal-arm64
+          # Flat zip (files at root, matching the Windows zip layout) with Unix perms preserved.
+          ( cd dist/qwen3-tts-server-macos-metal-arm64 && \
+            zip -r "$GITHUB_WORKSPACE/${{ steps.name.outputs.archive }}" . )
           ls -la "${{ steps.name.outputs.archive }}"
 
       - name: Upload artifact
@@ -293,9 +299,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version || github.ref_name }}
-          name: ${{ inputs.version || github.ref_name }}
+          tag_name: ${{ steps.name.outputs.version }}
+          name: ${{ steps.name.outputs.version }}
           files: ${{ steps.name.outputs.archive }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.name.outputs.version, '-') }}
