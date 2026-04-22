@@ -385,7 +385,18 @@ int main(int argc, char ** argv) {
     svr.set_payload_max_length(256 * 1024 * 1024); // 256 MiB uploads cap
 
     svr.Get("/health", [&](const httplib::Request &, httplib::Response & res) {
-        send_json(res, 200, json{{"status", "ok"}, {"model_loaded", tts.is_loaded()}});
+        json models = json::object();
+        if (!tts.get_tts_model_path().empty()) {
+            models["tts"] = fs::path(tts.get_tts_model_path()).filename().string();
+        }
+        if (!tts.get_decoder_model_path().empty()) {
+            models["decoder"] = fs::path(tts.get_decoder_model_path()).filename().string();
+        }
+        send_json(res, 200, json{
+            {"status",       "ok"},
+            {"model_loaded", tts.is_loaded()},
+            {"models",       models},
+        });
     });
     svr.Get("/v1/capabilities", [&](const httplib::Request &, httplib::Response & res) {
         handle_capabilities(tts, res);
