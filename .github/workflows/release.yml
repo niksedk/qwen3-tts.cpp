@@ -136,17 +136,17 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install build deps + Vulkan
+      - name: Install build deps + Vulkan SDK (LunarG apt repo)
         run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
             ninja-build \
-            libvulkan-dev \
-            glslc \
-            glslang-tools \
-            spirv-tools
+            vulkan-sdk
 
       - name: Configure (AVX2 baseline, Vulkan, $ORIGIN rpath)
         run: |
