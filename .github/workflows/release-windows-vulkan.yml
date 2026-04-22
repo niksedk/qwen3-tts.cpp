@@ -1,4 +1,4 @@
-name: Release - Windows Vulkan
+name: Build and release
 
 on:
   push:
