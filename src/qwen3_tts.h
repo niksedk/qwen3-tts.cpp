@@ -149,6 +149,10 @@ public:
     // Check if models are loaded
     bool is_loaded() const { return models_loaded_; }
 
+    // Paths of the currently loaded GGUF files (empty until load_models succeeds).
+    const std::string & get_tts_model_path()     const { return tts_model_path_; }
+    const std::string & get_decoder_model_path() const { return decoder_model_path_; }
+
     // List named speakers exposed by the currently loaded model metadata.
     // Returns normalized (lowercase) speaker keys; empty for non-CustomVoice models.
     std::vector<std::string> get_available_speakers() const;
