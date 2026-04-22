@@ -39,7 +39,7 @@ void AudioTokenizerDecoder::unload_model() {
         state.sched = nullptr;
     }
     if (state.backend) {
-        release_preferred_backend(state.backend);
+        ggml_backend_free(state.backend);
         state.backend = nullptr;
     }
     if (state.backend_cpu) {
@@ -307,7 +307,7 @@ bool AudioTokenizerDecoder::load_model(const std::string & model_path) {
 
     if (!load_tensor_data_from_file(model_path, gguf_ctx, model.ctx,
                                     model.tensors, model.buffer, error_msg,
-                                    GGML_BACKEND_DEVICE_TYPE_IGPU)) {
+                                    GGML_BACKEND_DEVICE_TYPE_CPU)) {
         return false;
     }
 
@@ -328,8 +328,9 @@ bool AudioTokenizerDecoder::load_model(const std::string & model_path) {
         upload_if_present(model.vq_rest_codebook[i]);
     }
 
-    state.backend = init_preferred_backend("AudioTokenizerDecoder", &error_msg);
+    state.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!state.backend) {
+        error_msg = "Failed to initialize CPU backend for AudioTokenizerDecoder";
         return false;
     }
 
