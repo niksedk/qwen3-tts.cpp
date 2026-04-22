@@ -24,7 +24,12 @@ benchmark_output/
 !examples/readme_clone_input.wav
 !examples/readme_example_clone.wav
 tmp*.mlpackage/
-third_party/
+third_party/*
+!third_party/httplib.h
+!third_party/json.hpp
+
+# Claude Code local settings
+.claude/
 
 # IDE
 .vscode/
