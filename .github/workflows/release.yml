@@ -1,0 +1,301 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v0.2.0). Leave empty to only upload zips as workflow artifacts without creating a release.'
+        required: false
+        type: string
+
+jobs:
+  windows-vulkan:
+    name: Windows x64 (Vulkan)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    env:
+      VULKAN_SDK_VERSION: 1.3.290.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows-x64
+
+      - name: Install Vulkan SDK
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ver = "${{ env.VULKAN_SDK_VERSION }}"
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          Write-Host "Downloading Vulkan SDK $ver from $url"
+          Invoke-WebRequest -Uri $url -OutFile vulkan-sdk.exe
+          $p = Start-Process -FilePath vulkan-sdk.exe `
+                             -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" `
+                             -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK install failed (exit $($p.ExitCode))" }
+
+      - name: Export Vulkan SDK env
+        shell: pwsh
+        run: |
+          $sdk = "C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}"
+          if (-not (Test-Path $sdk)) { throw "Vulkan SDK missing at $sdk" }
+          "VULKAN_SDK=$sdk"     | Out-File -FilePath $env:GITHUB_ENV   -Append
+          "$sdk\Bin"            | Out-File -FilePath $env:GITHUB_PATH  -Append
+
+      - name: Configure (AVX2 baseline, Vulkan, static MSVC runtime)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DQWEN3_TTS_EMBED_GGML=ON `
+            -DGGML_VULKAN=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_AVX2=ON `
+            -DGGML_AVX512=OFF `
+            -DGGML_AVX512_VBMI=OFF `
+            -DGGML_AVX512_VNNI=OFF `
+            -DGGML_AVX512_BF16=OFF `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build qwen3-tts-server (Release)
+        shell: pwsh
+        run: cmake --build build --target qwen3-tts-server --config Release --parallel
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $stage = "dist/qwen3-tts-server-windows-vulkan-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item build/Release/qwen3-tts-server.exe $stage
+          Copy-Item build/bin/Release/*.dll            $stage
+          Copy-Item README.md                          $stage
+          Write-Host "Staged files:"
+          Get-ChildItem $stage | Format-Table Name, Length -AutoSize
+
+      - name: Determine archive name
+        id: name
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF -like "refs/tags/*") {
+            $env:GITHUB_REF -replace "refs/tags/", ""
+          } elseif ("${{ inputs.version }}") {
+            "${{ inputs.version }}"
+          } else {
+            "dev-$(git rev-parse --short HEAD)"
+          }
+          $zip = "qwen3-tts-server-$ver-windows-vulkan-x64.zip"
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Archive
+        shell: pwsh
+        run: |
+          $zip = "${{ steps.name.outputs.zip }}"
+          Compress-Archive -Path "dist/qwen3-tts-server-windows-vulkan-x64/*" -DestinationPath $zip -Force
+          Write-Host "Created $zip ($([int]((Get-Item $zip).Length / 1MB)) MB)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-tts-server-windows-vulkan-x64
+          path: ${{ steps.name.outputs.zip }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: ${{ inputs.version || github.ref_name }}
+          files: ${{ steps.name.outputs.zip }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+
+  linux-vulkan:
+    name: Linux x64 (Vulkan + CPU fallback)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps + Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            libvulkan-dev \
+            glslc \
+            glslang-tools \
+            spirv-tools
+
+      - name: Configure (AVX2 baseline, Vulkan, $ORIGIN rpath)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQWEN3_TTS_EMBED_GGML=ON \
+            -DGGML_VULKAN=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_AVX2=ON \
+            -DGGML_AVX512=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_EXE_LINKER_FLAGS='-static-libstdc++ -static-libgcc'
+
+      - name: Build qwen3-tts-server
+        run: cmake --build build --target qwen3-tts-server --parallel
+
+      - name: Stage artifacts
+        run: |
+          stage="dist/qwen3-tts-server-linux-vulkan-x64"
+          mkdir -p "$stage"
+          exe=$(find build -name qwen3-tts-server -type f -executable | head -n 1)
+          if [ -z "$exe" ]; then echo "qwen3-tts-server not found" >&2; exit 1; fi
+          cp "$exe" "$stage/"
+          find build -name 'libggml*.so*' -type f -exec cp -a {} "$stage/" \;
+          cp README.md "$stage/"
+          echo "Staged files:"
+          ls -la "$stage"
+          echo "ldd report:"
+          ldd "$stage/qwen3-tts-server" || true
+
+      - name: Determine archive name
+        id: name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="dev-$(git rev-parse --short HEAD)"
+          fi
+          archive="qwen3-tts-server-$ver-linux-vulkan-x64.tar.gz"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Archive
+        run: |
+          tar -C dist -czf "${{ steps.name.outputs.archive }}" qwen3-tts-server-linux-vulkan-x64
+          ls -la "${{ steps.name.outputs.archive }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-tts-server-linux-vulkan-x64
+          path: ${{ steps.name.outputs.archive }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: ${{ inputs.version || github.ref_name }}
+          files: ${{ steps.name.outputs.archive }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+
+  macos-metal:
+    name: macOS ARM64 (Metal)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          brew update
+          brew install ninja
+
+      - name: Configure (Metal, @loader_path rpath)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQWEN3_TTS_EMBED_GGML=ON \
+            -DGGML_METAL=ON \
+            -DGGML_NATIVE=OFF \
+            -DQWEN3_TTS_COREML=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='@loader_path'
+
+      - name: Build qwen3-tts-server
+        run: cmake --build build --target qwen3-tts-server --parallel
+
+      - name: Stage artifacts
+        run: |
+          stage="dist/qwen3-tts-server-macos-metal-arm64"
+          mkdir -p "$stage"
+          exe=$(find build -name qwen3-tts-server -type f -perm +111 | head -n 1)
+          if [ -z "$exe" ]; then echo "qwen3-tts-server not found" >&2; exit 1; fi
+          cp "$exe" "$stage/"
+          find build -name 'libggml*.dylib' -type f -exec cp -a {} "$stage/" \;
+          # Metal shader resources: ship whatever ggml produced (.metallib preferred, .metal source as fallback)
+          find build -name '*.metallib' -type f -exec cp -a {} "$stage/" \; || true
+          find build -name 'ggml-metal.metal' -type f -exec cp -a {} "$stage/" \; || true
+          cp README.md "$stage/"
+          echo "Staged files:"
+          ls -la "$stage"
+          echo "otool -L report:"
+          otool -L "$stage/qwen3-tts-server" || true
+
+      - name: Determine archive name
+        id: name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="dev-$(git rev-parse --short HEAD)"
+          fi
+          archive="qwen3-tts-server-$ver-macos-metal-arm64.tar.gz"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Archive
+        run: |
+          tar -C dist -czf "${{ steps.name.outputs.archive }}" qwen3-tts-server-macos-metal-arm64
+          ls -la "${{ steps.name.outputs.archive }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-tts-server-macos-metal-arm64
+          path: ${{ steps.name.outputs.archive }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: ${{ inputs.version || github.ref_name }}
+          files: ${{ steps.name.outputs.archive }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
