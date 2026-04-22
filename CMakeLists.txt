@@ -166,7 +166,6 @@ add_library(qwen3_tts STATIC
     src/pipeline/pipeline_runtime.cpp
     src/pipeline/pipeline_synthesize.cpp
     src/qwen3_tts.cpp
-    src/qwen3_tts_c.cpp
 )
 target_include_directories(qwen3_tts PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -179,106 +178,39 @@ target_link_libraries(qwen3_tts PUBLIC
     audio_tokenizer_decoder
     Threads::Threads
 )
-target_compile_definitions(qwen3_tts PRIVATE QWEN3_TTS_EXPORT)
 if(WIN32)
     target_link_libraries(qwen3_tts PUBLIC Psapi)
 endif()
 
-# Shared library for JNI (Android/JVM)
-option(QWEN3_TTS_BUILD_SHARED "Build shared library for JNI" OFF)
-if(QWEN3_TTS_BUILD_SHARED)
-    find_package(JNI REQUIRED)
-    add_library(qwen3_tts_jni SHARED
-        src/qwen3_tts_jni.cpp
-    )
-    target_link_libraries(qwen3_tts_jni PRIVATE qwen3_tts JNI::JNI)
-    target_compile_definitions(qwen3_tts PRIVATE QWEN3_TTS_EXPORT)
+# HTTP server executable
+add_executable(qwen3-tts-server
+    src/server/server_main.cpp
+    src/server/wav_memory.cpp
+)
+target_include_directories(qwen3-tts-server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+target_link_libraries(qwen3-tts-server PRIVATE
+    qwen3_tts
+    Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(qwen3-tts-server PRIVATE ws2_32)
 endif()
 
-# CLI executable
-add_executable(qwen3-tts-cli
-    src/main.cpp
-)
-target_link_libraries(qwen3-tts-cli PRIVATE
-    qwen3_tts
-)
-
-# Test executable for tokenizer
-add_executable(test_tokenizer
-    tests/test_tokenizer.cpp
-)
-target_link_libraries(test_tokenizer PRIVATE
-    text_tokenizer
-    Threads::Threads
-)
-
-# Test executable for audio encoder
-add_executable(test_encoder
-    tests/test_encoder.cpp
-)
-target_link_libraries(test_encoder PRIVATE
-    audio_tokenizer_encoder
-    Threads::Threads
-)
-
-# Test executable for transformer
-add_executable(test_transformer
-    tests/test_transformer.cpp
-)
-target_link_libraries(test_transformer PRIVATE
-    tts_transformer
-    Threads::Threads
-)
-
-# Test executable for audio decoder
-add_executable(test_decoder
-    tests/test_decoder.cpp
-)
-
-# Quantization tool
-add_executable(qwen3-tts-quantize
-    src/qwen3_tts_quantize.cpp
-)
-target_include_directories(qwen3-tts-quantize PRIVATE
-    ${GGML_DIR}/include
-)
-qwen3_link_ggml(qwen3-tts-quantize)
-target_link_libraries(test_decoder PRIVATE
-    audio_tokenizer_decoder
-    Threads::Threads
-)
-
 # Install targets
-install(TARGETS text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder qwen3_tts qwen3-tts-cli
+install(TARGETS text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder qwen3_tts qwen3-tts-server
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
-install(FILES 
-    src/gguf_loader.h 
-    src/text_tokenizer.h 
-    src/tts_transformer.h 
+install(FILES
+    src/gguf_loader.h
+    src/text_tokenizer.h
+    src/tts_transformer.h
     src/coreml_code_predictor.h
-    src/audio_tokenizer_encoder.h 
-    src/audio_tokenizer_decoder.h 
+    src/audio_tokenizer_encoder.h
+    src/audio_tokenizer_decoder.h
     src/qwen3_tts.h
     DESTINATION include
-)
-
-# CTest support
-enable_testing()
-add_test(NAME tokenizer_test
-    COMMAND test_tokenizer
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME encoder_test
-    COMMAND test_encoder --tokenizer models/qwen3-tts-0.6b-f16.gguf --audio clone.wav --reference reference/ref_audio_embedding.bin
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME transformer_test
-    COMMAND test_transformer
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME decoder_test
-    COMMAND test_decoder
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )

@@ -10,9 +10,11 @@ param (
     [string]$Configuration = "Release",
     [string]$BuildDir = "",
     [string]$GGMLDir = "",
-    [string]$Target = "qwen3-tts-cli",
+    [string]$Target = "qwen3-tts-server",
     [string]$ModelDir = "models",
-    [string]$SmokeText = "This is a test synthesis from build.ps1."
+    [string]$ServerHost = "127.0.0.1",
+    [int]$ServerPort = 8080,
+    [switch]$RunServer
 )
 
 Set-StrictMode -Version Latest
@@ -132,7 +134,6 @@ $configureArgs = @(
     "-DQWEN3_TTS_COREML=OFF",
     "-DQWEN3_TTS_EMBED_GGML=ON",
     "-DQWEN3_TTS_GGML_DIR=$resolvedGGMLDir",
-    "-DQWEN3_TTS_BUILD_SHARED=OFF",
     "-DQWEN3_TTS_CUDA=$cudaFlag",
     "-DGGML_CUDA=$cudaFlag",
     "-DGGML_CUDA_GRAPHS=$cudaGraphsFlag"
@@ -166,10 +167,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $exePath = Find-FirstExisting @(
-    (Join-Path $resolvedBuildDir "$Configuration\qwen3-tts-cli.exe"),
-    (Join-Path $resolvedBuildDir "qwen3-tts-cli.exe"),
-    (Join-Path $resolvedBuildDir "bin\$Configuration\qwen3-tts-cli.exe"),
-    (Join-Path $resolvedBuildDir "bin\qwen3-tts-cli.exe")
+    (Join-Path $resolvedBuildDir "$Configuration\qwen3-tts-server.exe"),
+    (Join-Path $resolvedBuildDir "qwen3-tts-server.exe"),
+    (Join-Path $resolvedBuildDir "bin\$Configuration\qwen3-tts-server.exe"),
+    (Join-Path $resolvedBuildDir "bin\qwen3-tts-server.exe")
 )
 
 $dllSourceDir = Find-FirstExisting @(
@@ -187,26 +188,21 @@ if ($exePath -and $dllSourceDir) {
 
 Write-Host "Build success." -ForegroundColor Green
 if ($exePath) {
-    Write-Host "CLI executable: $exePath"
+    Write-Host "Server executable: $exePath"
 } else {
-    Write-Host "CLI executable not found (target might not include qwen3-tts-cli)." -ForegroundColor Yellow
+    Write-Host "Server executable not found (target might not include qwen3-tts-server)." -ForegroundColor Yellow
 }
 
-if ($RunSmokeTest) {
+if ($RunServer) {
     if (-not $exePath) {
-        throw "RunSmokeTest requested, but qwen3-tts-cli.exe was not found."
+        throw "RunServer requested, but qwen3-tts-server.exe was not found."
     }
 
     $resolvedModelDir = if ([System.IO.Path]::IsPathRooted($ModelDir)) { $ModelDir } else { Join-Path $ScriptDir $ModelDir }
     if (-not (Test-Path $resolvedModelDir)) {
-        throw "RunSmokeTest requested, model directory not found: $resolvedModelDir"
+        throw "RunServer requested, model directory not found: $resolvedModelDir"
     }
 
-    $outWav = Join-Path $resolvedBuildDir "smoke_test.wav"
-    Write-Host "Running smoke test synthesis..."
-    & $exePath -m $resolvedModelDir -t $SmokeText -o $outWav --temperature 0 --top-k 0 --max-tokens 64
-    if ($LASTEXITCODE -ne 0) {
-        throw "Smoke test failed."
-    }
-    Write-Host "Smoke test output: $outWav" -ForegroundColor Green
+    Write-Host "Starting server on http://${ServerHost}:${ServerPort} ..."
+    & $exePath -m $resolvedModelDir --host $ServerHost --port $ServerPort
 }
