@@ -171,7 +171,7 @@ jobs:
           exe=$(find build -name qwen3-tts-server -type f -executable | head -n 1)
           if [ -z "$exe" ]; then echo "qwen3-tts-server not found" >&2; exit 1; fi
           cp "$exe" "$stage/"
-          find build -name 'libggml*.so*' -type f -exec cp -a {} "$stage/" \;
+          find build -name 'libggml*.so*' \( -type f -o -type l \) -exec cp -a {} "$stage/" \;
           cp README.md "$stage/"
           echo "Staged files:"
           ls -la "$stage"
@@ -256,7 +256,7 @@ jobs:
           exe=$(find build -name qwen3-tts-server -type f -perm +111 | head -n 1)
           if [ -z "$exe" ]; then echo "qwen3-tts-server not found" >&2; exit 1; fi
           cp "$exe" "$stage/"
-          find build -name 'libggml*.dylib' -type f -exec cp -a {} "$stage/" \;
+          find build -name 'libggml*.dylib' \( -type f -o -type l \) -exec cp -a {} "$stage/" \;
           # Metal shader resources: ship whatever ggml produced (.metallib preferred, .metal source as fallback)
           find build -name '*.metallib' -type f -exec cp -a {} "$stage/" \; || true
           find build -name 'ggml-metal.metal' -type f -exec cp -a {} "$stage/" \; || true
