@@ -33,6 +33,18 @@ ggml_backend_t init_preferred_backend(const char * component_name, std::string *
         return shared.backend;
     }
 
+#ifdef GGML_BACKEND_DL
+    // When ggml is built with GGML_BACKEND_DL, no backend self-registers via
+    // its constructor; the runtime must explicitly load each backend DLL/.so
+    // before ggml_backend_init_by_type can find anything. ggml_backend_load_all
+    // is internally idempotent, so it's safe to call on every entry.
+    static bool backends_loaded = false;
+    if (!backends_loaded) {
+        ggml_backend_load_all();
+        backends_loaded = true;
+    }
+#endif
+
     ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
     if (!backend) {
         backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
