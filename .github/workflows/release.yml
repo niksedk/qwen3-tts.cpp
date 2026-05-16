@@ -303,6 +303,99 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.name.outputs.version, '-') }}
 
+  linux-arm64:
+    name: Linux ARM64 (CPU only)
+    runs-on: ubuntu-22.04-arm
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # No Vulkan SDK: LunarG does not ship aarch64 packages, and the GPU
+      # ecosystem on Linux ARM64 is too fragmented to assume Vulkan. CPU-only
+      # gives a single zip that works on Raspberry Pi-class boards, Ampere/
+      # Graviton servers, and Apple Silicon Linux VMs.
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            zip
+
+      - name: Configure (CPU only, $ORIGIN rpath)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQWEN3_TTS_EMBED_GGML=ON \
+            -DGGML_VULKAN=OFF \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_EXE_LINKER_FLAGS='-static-libstdc++ -static-libgcc'
+
+      - name: Build qwen3-tts-server
+        run: cmake --build build --target qwen3-tts-server --parallel
+
+      - name: Stage artifacts
+        run: |
+          stage="dist/qwen3-tts-server-linux-arm64"
+          mkdir -p "$stage"
+          exe=$(find build -name qwen3-tts-server -type f -executable | head -n 1)
+          if [ -z "$exe" ]; then echo "qwen3-tts-server not found" >&2; exit 1; fi
+          cp "$exe" "$stage/"
+          find build -name 'libggml*.so*' \( -type f -o -type l \) -exec cp -a {} "$stage/" \;
+          cp README.md "$stage/"
+          echo "Staged files:"
+          ls -la "$stage"
+          echo "ldd report:"
+          ldd "$stage/qwen3-tts-server" || true
+
+      - name: Determine archive name
+        id: name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="dev-$(git rev-parse --short HEAD)"
+          fi
+          ver="$(printf '%s' "$ver" | tr -d '[:space:]')"
+          archive="qwen3-tts-server-$ver-linux-arm64.zip"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Archive
+        run: |
+          # Flat zip (files at root, matching the Windows zip layout) with Unix perms preserved.
+          ( cd dist/qwen3-tts-server-linux-arm64 && \
+            zip -r "$GITHUB_WORKSPACE/${{ steps.name.outputs.archive }}" . )
+          ls -la "${{ steps.name.outputs.archive }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-tts-server-linux-arm64
+          path: ${{ steps.name.outputs.archive }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.name.outputs.version }}
+          name: ${{ steps.name.outputs.version }}
+          files: ${{ steps.name.outputs.archive }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.name.outputs.version, '-') }}
+
   macos-metal:
     name: macOS ARM64 (Metal)
     runs-on: macos-latest
