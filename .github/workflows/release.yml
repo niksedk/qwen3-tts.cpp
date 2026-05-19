@@ -71,7 +71,7 @@ jobs:
 
       - name: Build qwen3-tts-server (Release)
         shell: pwsh
-        run: cmake --build build --target qwen3-tts-server --config Release --parallel
+        run: cmake --build build --target qwen3-tts-server --config Release --parallel -- /verbosity:minimal /nologo
 
       - name: Stage artifacts
         shell: pwsh
@@ -169,11 +169,15 @@ jobs:
             -DGGML_AVX512_VNNI=OFF `
             -DGGML_AVX512_BF16=OFF `
             "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCHITECTURES }}" `
+            "-DCMAKE_CUDA_FLAGS=--diag-suppress=221" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
       - name: Build qwen3-tts-server (Release)
         shell: pwsh
-        run: cmake --build build --target qwen3-tts-server --config Release --parallel
+        # /verbosity:minimal silences MSBuild's per-file nvcc command-line echo
+        # (a single CUDA compile prints ~30 lines of -I/-D flags at default verbosity).
+        # /nologo drops the build-engine banner.
+        run: cmake --build build --target qwen3-tts-server --config Release --parallel -- /verbosity:minimal /nologo
 
       - name: Stage artifacts
         shell: pwsh
@@ -268,7 +272,7 @@ jobs:
 
       - name: Build qwen3-tts-server (Release)
         shell: pwsh
-        run: cmake --build build --target qwen3-tts-server --config Release --parallel
+        run: cmake --build build --target qwen3-tts-server --config Release --parallel -- /verbosity:minimal /nologo
 
       - name: Stage artifacts
         shell: pwsh
