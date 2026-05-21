@@ -98,6 +98,35 @@ bool TTSTransformer::load_model(const std::string & model_path) {
         return false;
     }
 
+    // Guard against a metadata-key mismatch: if parse_config fell back to defaults (e.g. a GGUF
+    // whose key schema the loader does not recognise) the parsed dimensions can disagree with the
+    // actual weights. That otherwise loads "successfully" and then segfaults during compute, with
+    // no error message. Compare a few representative tensors against the parsed config instead.
+    if (meta_ctx) {
+        struct dim_check { const char * tensor; int dim; int64_t expected; const char * what; };
+        const auto & vcfg = impl_->model.config;
+        const dim_check checks[] = {
+            { "talker.output_norm.weight",       0, vcfg.hidden_size,                 "talker hidden size" },
+            { "talker.blk.0.ffn_gate.weight",    1, vcfg.intermediate_size,           "talker feed-forward size" },
+            { "code_pred.output_norm.weight",    0, vcfg.code_pred_hidden_size,       "code predictor hidden size" },
+            { "code_pred.blk.0.ffn_gate.weight", 1, vcfg.code_pred_intermediate_size, "code predictor feed-forward size" },
+        };
+        for (const auto & c : checks) {
+            struct ggml_tensor * t = ggml_get_tensor(meta_ctx, c.tensor);
+            if (t && t->ne[c.dim] != c.expected) {
+                char buf[320];
+                snprintf(buf, sizeof(buf),
+                         "Model metadata mismatch: config %s is %lld but tensor '%s' has dimension %lld. "
+                         "The GGUF metadata schema was not recognised - re-convert the model or update parse_config().",
+                         c.what, (long long) c.expected, c.tensor, (long long) t->ne[c.dim]);
+                error_msg_ = buf;
+                gguf_free(ctx);
+                ggml_free(meta_ctx);
+                return false;
+            }
+        }
+    }
+
     if (!transformer_internal::ops::create_tensors(*this, ctx)) {
         gguf_free(ctx);
         if (meta_ctx) ggml_free(meta_ctx);
