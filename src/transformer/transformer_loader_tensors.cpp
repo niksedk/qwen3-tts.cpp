@@ -44,7 +44,12 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
             continue;
         }
 
-        if (strstr(name, "talker.text_embd.weight")) {
+        // CrispASR-converted GGUFs (cstr/qwen3-tts-*-GGUF) use llama.cpp-style
+        // tensor names: talker.token_embd_text / talker.token_embd / talker.output
+        // for what koboldcpp/khimaros call talker.text_embd / talker.codec_embd /
+        // talker.codec_head. The codec branch must reject the _text variant.
+        if (strstr(name, "talker.text_embd.weight") ||
+            strstr(name, "talker.token_embd_text.weight")) {
             ne[0] = cfg.text_embd_dim;
             ne[1] = cfg.text_vocab_size;
             n_dims = 2;
@@ -62,11 +67,14 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
         } else if (strstr(name, "talker.text_proj.fc2.bias")) {
             ne[0] = cfg.hidden_size;
             n_dims = 1;
-        } else if (strstr(name, "talker.codec_embd.weight")) {
+        } else if (strstr(name, "talker.codec_embd.weight") ||
+                   (strstr(name, "talker.token_embd.weight") &&
+                    !strstr(name, "talker.token_embd_text"))) {
             ne[0] = cfg.hidden_size;
             ne[1] = cfg.codec_vocab_size;
             n_dims = 2;
-        } else if (strstr(name, "talker.codec_head.weight")) {
+        } else if (strstr(name, "talker.codec_head.weight") ||
+                   strstr(name, "talker.output.weight")) {
             ne[0] = cfg.hidden_size;
             ne[1] = cfg.codec_vocab_size;
             n_dims = 2;
@@ -185,9 +193,11 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
             } else {
                 continue;
             }
-        } else if (strstr(name, "code_pred.codec_embd.")) {
+        } else if (strstr(name, "code_pred.codec_embd.") ||
+                   strstr(name, "code_pred.token_embd.")) {
             int cb_idx = -1;
-            if (sscanf(name, "code_pred.codec_embd.%d.weight", &cb_idx) == 1 &&
+            if ((sscanf(name, "code_pred.codec_embd.%d.weight", &cb_idx) == 1 ||
+                 sscanf(name, "code_pred.token_embd.%d.weight", &cb_idx) == 1) &&
                 cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
                 ne[0] = cfg.hidden_size;
                 ne[1] = cfg.code_pred_vocab_size;
@@ -195,12 +205,14 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
             } else {
                 continue;
             }
-        } else if (strstr(name, "code_pred.lm_head.")) {
+        } else if (strstr(name, "code_pred.lm_head.") ||
+                   strstr(name, "code_pred.output.")) {
             if (impl->skip_ggml_code_pred_layers) {
                 continue;
             }
             int cb_idx = -1;
-            if (sscanf(name, "code_pred.lm_head.%d.weight", &cb_idx) == 1 &&
+            if ((sscanf(name, "code_pred.lm_head.%d.weight", &cb_idx) == 1 ||
+                 sscanf(name, "code_pred.output.%d.weight", &cb_idx) == 1) &&
                 cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
                 ne[0] = cfg.code_pred_hidden_size;
                 ne[1] = cfg.code_pred_vocab_size;
@@ -226,7 +238,8 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
         ggml_set_name(tensor, name);
         impl->model.tensors[name] = tensor;
 
-        if (strstr(name, "talker.text_embd.weight")) {
+        if (strstr(name, "talker.text_embd.weight") ||
+            strstr(name, "talker.token_embd_text.weight")) {
             impl->model.text_embd = tensor;
         } else if (strstr(name, "talker.text_proj.fc1.weight")) {
             impl->model.text_proj_fc1 = tensor;
@@ -236,9 +249,12 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
             impl->model.text_proj_fc2 = tensor;
         } else if (strstr(name, "talker.text_proj.fc2.bias")) {
             impl->model.text_proj_fc2_bias = tensor;
-        } else if (strstr(name, "talker.codec_embd.weight")) {
+        } else if (strstr(name, "talker.codec_embd.weight") ||
+                   (strstr(name, "talker.token_embd.weight") &&
+                    !strstr(name, "talker.token_embd_text"))) {
             impl->model.codec_embd = tensor;
-        } else if (strstr(name, "talker.codec_head.weight")) {
+        } else if (strstr(name, "talker.codec_head.weight") ||
+                   strstr(name, "talker.output.weight")) {
             impl->model.codec_head = tensor;
         } else if (strstr(name, "talker.output_norm.weight")) {
             impl->model.output_norm = tensor;
@@ -282,15 +298,21 @@ bool transformer_internal::ops::create_tensors(TTSTransformer & self, struct ggu
                 else if (strstr(name, "ffn_up.weight")) layer.ffn_up = tensor;
                 else if (strstr(name, "ffn_down.weight")) layer.ffn_down = tensor;
             }
-        } else if (strstr(name, "code_pred.codec_embd.")) {
+        } else if (strstr(name, "code_pred.codec_embd.") ||
+                   strstr(name, "code_pred.token_embd.")) {
             int cb_idx = -1;
-            sscanf(name, "code_pred.codec_embd.%d.weight", &cb_idx);
+            if (sscanf(name, "code_pred.codec_embd.%d.weight", &cb_idx) != 1) {
+                sscanf(name, "code_pred.token_embd.%d.weight", &cb_idx);
+            }
             if (cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
                 impl->model.code_pred_embd[cb_idx] = tensor;
             }
-        } else if (strstr(name, "code_pred.lm_head.")) {
+        } else if (strstr(name, "code_pred.lm_head.") ||
+                   strstr(name, "code_pred.output.")) {
             int cb_idx = -1;
-            sscanf(name, "code_pred.lm_head.%d.weight", &cb_idx);
+            if (sscanf(name, "code_pred.lm_head.%d.weight", &cb_idx) != 1) {
+                sscanf(name, "code_pred.output.%d.weight", &cb_idx);
+            }
             if (cb_idx >= 0 && cb_idx < cfg.n_codebooks - 1) {
                 impl->model.code_pred_head[cb_idx] = tensor;
             }
